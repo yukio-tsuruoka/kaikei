@@ -3,7 +3,7 @@
    データはこの端末の中（localStorage）にだけ保存し、外へは送らない。 */
 
 const STORE_KEY = 'kaikei.v1';
-const APP_VERSION = '1.3.0';
+const APP_VERSION = '1.3.1';
 
 // ---------- 勘定科目 ----------
 const EXPENSES = [
@@ -869,6 +869,9 @@ function viewSettings() {
     ${state.customExpenses.length ? `<div class="chips">${state.customExpenses.map(n => `<button class="chip" data-delacc="${esc(n)}" ${used.has(n) ? 'disabled title="使用中"' : ''}>${esc(n)} ${used.has(n) ? '（使用中）' : '✕'}</button>`).join('')}</div>` : ''}
   </div>
 
+  <div class="card"><h2 style="margin-top:0">アプリの版</h2>
+    <p class="small">いまの版: <b>ver ${APP_VERSION}</b>。Wi-Fi につながっているときに押すと、新しい版があれば切り替えます（帳簿の記録は消えません）。</p>
+    <button class="btn" id="b-update">新しい版を確認する</button></div>
   <p class="muted small">お店の帳簿 ver ${APP_VERSION}・データはこの端末の中だけに保存され、インターネットには送られません。</p>`;
 }
 
@@ -897,6 +900,7 @@ function bindSettings() {
     const ok = await download(`帳簿バックアップ_${stamp()}.json`, data, 'application/json');
     if (ok) { state.lastBackup = Date.now(); save(); render(); toast('バックアップを保存しました'); }
   };
+  $('b-update').onclick = checkUpdate;
   $('b-import').onclick = () => $('b-file').click();
   $('b-file').onchange = async e => {
     const file = e.target.files[0]; if (!file) return;
@@ -997,5 +1001,32 @@ window.addEventListener('online', updateOnline);
 window.addEventListener('offline', updateOnline);
 updateOnline();
 if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
-if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});
+if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+  const hadController = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.register('sw.js').catch(() => {});
+  // 新しい版が届いたら、上に「新しい版に切り替える」を出す（入力中の内容を消さないよう、自動では切り替えない）
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hadController || checkUpdate.reloading) return;
+    const b = document.getElementById('newver'); b.hidden = false;
+  });
+}
+async function checkUpdate() {
+  if (!navigator.onLine) return alert('Wi-Fi につながっているときに押してください。');
+  try {
+    const reg = await navigator.serviceWorker.getRegistration();
+    if (reg) {
+      await reg.update();
+      const w = reg.installing || reg.waiting; // 新しい版の準備が終わるまで待つ
+      if (w) await new Promise(res => { w.addEventListener('statechange', () => { if (w.state === 'activated' || w.state === 'redundant') res(); }); setTimeout(res, 8000); });
+    }
+    const r = await fetch('app.js', { cache: 'no-store' });
+    const latest = ((await r.text()).match(/APP_VERSION = '([^']+)'/) || [])[1];
+    if (latest && latest !== APP_VERSION) {
+      toast(`ver ${latest} に切り替えます`);
+      checkUpdate.reloading = true;
+      setTimeout(() => location.reload(), 1200);
+    } else toast(`いまの版（ver ${APP_VERSION}）が最新です`);
+  } catch (e) { alert('確認できませんでした: ' + e.message); }
+}
+document.getElementById('appver').textContent = 'ver ' + APP_VERSION;
 render();
