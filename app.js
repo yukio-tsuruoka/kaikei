@@ -3,7 +3,7 @@
    データはこの端末の中（localStorage）にだけ保存し、外へは送らない。 */
 
 const STORE_KEY = 'kaikei.v1';
-const APP_VERSION = '1.8.0';
+const APP_VERSION = '1.9.0';
 
 // ---------- 勘定科目 ----------
 const EXPENSES = [
@@ -236,9 +236,10 @@ function toast(msg) {
 // ---------- 描画 ----------
 function render() {
   const v = document.getElementById('view');
-  const tab = ['customer', 'venues', 'venue', 'session'].includes(ui.view) ? 'customers' : ui.view === 'ledger' ? 'list' : ui.view;
+  const tab = ['customer', 'venues', 'venue', 'session', 'sessclose'].includes(ui.view) ? 'customers' : ui.view === 'ledger' ? 'list' : ui.view;
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.go === tab));
-  v.innerHTML = ({ home: viewHome, input: viewInput, list: viewList, summary: viewSummary, settings: viewSettings, ledger: viewLedger, customers: viewCustomers, customer: viewCustomer, venues: viewVenues, venue: viewVenue, session: viewSession })[ui.view]();
+  v.innerHTML = ({ home: viewHome, input: viewInput, list: viewList, summary: viewSummary, settings: viewSettings, ledger: viewLedger, customers: viewCustomers, customer: viewCustomer, venues: viewVenues, venue: viewVenue, session: viewSession, sessclose: viewSessClose })[ui.view]();
+  if (ui.view === 'sessclose') bindSessClose();
   if (ui.view === 'input') bindInput();
   if (ui.view === 'settings') bindSettings();
 }
@@ -273,6 +274,8 @@ function viewHome() {
     if (days === null || days >= 7) banner = `<div class="banner">${days === null ? 'まだバックアップがありません。' : `最後のバックアップから ${days} 日たっています。`}
       「設定」→「バックアップを保存」で、帳簿のコピーを残してください。</div>`;
   }
+  const uc = unclosedSessions();
+  if (uc.length) banner += `<div class="banner"><b>まだ締めていない会場の日があります</b>${uc.map(k => { const i = k.lastIndexOf('|'); return `<div style="display:flex;gap:10px;align-items:center;padding:6px 0"><span style="flex:1">${esc(k.slice(0, i))}・${jdate(k.slice(i + 1))}</span><button class="btn" data-opensess="${esc(k)}">締めへ</button></div>`; }).join('')}</div>`;
   const unpaid = state.entries.filter(isUnpaid).reduce((a, e) => a + e.amount, 0);
   if (unpaid) banner += `<div class="banner">まだ入金されていない注文が <b>${yen(unpaid)}</b> あります。「お客様」で確認できます。</div>`;
   const noRcpt = sorted(state.entries.filter(needsReceipt));
@@ -1146,11 +1149,16 @@ function viewSession() {
       ${body}</div>`;
   };
 
+  const closed = sess.close;
   return `${head}
+  ${closed ? `<div class="banner" style="background:var(--accent-soft);color:var(--accent)"><b>この日は締め済みです。</b>直すときは「締めの画面」で「締めを解除」を押してください。</div>` : ''}
   <div class="sbar">
     <div><b class="${done === names.length ? '' : 'out'}">対応済み ${done} / ${names.length} 人</b>
       <div class="small">現金 ${yen(cash)}・銀行 ${yen(bank)}・あとで ${yen(later)}</div></div>
-    <button class="btn primary" id="s-save" ${unsaved ? '' : 'disabled'}>保存する${unsaved ? `（${unsaved}人）` : ''}</button>
+    <div class="btns">
+      <button class="btn primary" id="s-save" ${unsaved && !closed ? '' : 'disabled'}>保存する${unsaved ? `（${unsaved}人）` : ''}</button>
+      <button class="btn" data-go="sessclose">${closed ? '締めの内容' : '締めへ'}</button>
+    </div>
   </div>
   <div class="seg">${[['todo', 'まだの人だけ'], ['all', '全員']].map(([k, l]) => `<button data-sfilter="${k}" class="${s.filter === k ? 'on' : ''}">${l}</button>`).join('')}</div>
   <div class="field"><input id="s-q" placeholder="お名前で探す" value="${esc(q)}"></div>
@@ -1168,6 +1176,7 @@ function viewSession() {
 
 function sessionAction(t) {
   const s = ui.sess, key = sessKey(s.venue, s.date), sess = sessionData(key);
+  if (sess.close) { alert('この日は締め済みです。直すときは「締めの画面」で「締めを解除」を押してください。'); render(); return; }
   const name = ui.sessNames[+t.dataset.i]; if (name === undefined) return;
   const r = sRow(sess, name), v = t.dataset.v, act = t.dataset.s;
   if (act === 'att') { r.att = r.att === v ? '' : v; }
@@ -1199,6 +1208,7 @@ function sessionAction(t) {
 // まとめて保存：1人1件の収入として帳簿に入れる。同じ日・会場・人はいつも同じ1件を上書きする
 function saveSession() {
   const s = ui.sess, key = sessKey(s.venue, s.date), sess = sessionData(key);
+  if (sess.close) return;
   let added = 0, updated = 0, removed = 0; const skipped = [];
   for (const name of ui.sessNames) {
     const r = sRow(sess, name), stt = rowState(name, r);
@@ -1228,6 +1238,132 @@ function saveSession() {
   if (skipped.length) alert('次の方はまだ保存していません:\n' + skipped.join('\n'));
 }
 
+// ---------- 締め（会場の当日の締め） ----------
+async function exportBackup() {
+  const data = JSON.stringify({ app: 'kaikei', version: APP_VERSION, exported: new Date().toISOString(), state }, null, 1);
+  const ok = await download(`帳簿バックアップ_${stamp()}.json`, data, 'application/json');
+  if (ok) { state.lastBackup = Date.now(); save(); render(); toast('バックアップを保存しました'); }
+}
+// 記録があるのに締めていない会場の日（今日より前）
+function unclosedSessions() {
+  return Object.entries(state.sessions || {}).filter(([k, ss]) => {
+    const date = k.slice(k.lastIndexOf('|') + 1);
+    return !ss.close && date < today() && Object.values(ss.rows || {}).some(r => r.att);
+  }).map(([k]) => k);
+}
+function sessionSummary(key) {
+  const [venue, date] = [key.slice(0, key.lastIndexOf('|')), key.slice(key.lastIndexOf('|') + 1)];
+  const sess = sessionData(key);
+  const names = [...new Set([...roster(venue), ...Object.keys(sess.rows)])].sort((a, b) => a.localeCompare(b, 'ja'));
+  const st = {}; const notDone = [];
+  for (const n of names) { st[n] = rowState(n, sRow(sess, n)); if (!st[n].done) notDone.push(n); }
+  const ents = state.entries.filter(e => e.session === key);
+  const byPay = { 現金: 0, 普通預金: 0, 売掛金: 0 };
+  const cashItems = new Map();
+  for (const e of ents) {
+    byPay[e.dr] = (byPay[e.dr] || 0) + e.amount;
+    if (e.dr === '現金') for (const it of e.items || []) { const c = cashItems.get(it.name) || { qty: 0, amount: 0 }; c.qty += it.qty; c.amount += it.price * it.qty; cashItems.set(it.name, c); }
+  }
+  const came = names.filter(n => sRow(sess, n).att === 'in').length;
+  return { venue, date, sess, names, st, notDone, ents, byPay, cashItems, came, absent: names.filter(n => sRow(sess, n).att === 'out').length };
+}
+
+function viewSessClose() {
+  const key = sessKey(ui.sess.venue, ui.sess.date);
+  const S = sessionSummary(key), c = S.sess.close;
+  const float = c ? c.float : parseAmount(ui.closeFloat || ''), counted = c ? c.counted : parseAmount(ui.closeCounted || '');
+  const expected = float + S.byPay['現金'];
+  const diff = counted - expected;
+  const unpaid = S.ents.filter(isUnpaid), noRcpt = S.ents.filter(needsReceipt);
+  const canClose = !S.notDone.length;
+  return `<button class="btn" data-go="session">◀ 当日の記録にもどる</button>
+  <h2>締め：${esc(S.venue)}　${jdate(S.date)}</h2>
+  ${c ? `<div class="banner" style="background:var(--accent-soft);color:var(--accent)"><b>締め済み</b>（${new Date(c.closedAt).toLocaleString('ja-JP')}）。直すときは下の「締めを解除」を押してください。</div>` : ''}
+
+  <div class="card">
+    <h2 style="margin-top:0">① 全員の対応</h2>
+    <div class="stats">
+      <div class="stat"><div class="label">対応済み</div><div class="value ${canClose ? '' : 'out'}">${S.names.length - S.notDone.length} / ${S.names.length} 人</div></div>
+      <div class="stat"><div class="label">来た</div><div class="value">${S.came} 人</div></div>
+      <div class="stat"><div class="label">休み</div><div class="value">${S.absent} 人</div></div>
+    </div>
+    ${S.notDone.length ? `<p class="out small" style="margin-bottom:6px">まだ対応が終わっていない方（押すとその方の記録に飛びます）:</p>
+      <div class="chips">${S.notDone.map(n => `<button class="chip" data-jump="${esc(n)}">${esc(n)}（${esc(S.st[n].label)}）</button>`).join('')}</div>` : '<p class="small" style="margin-bottom:0">全員の対応が終わっています。</p>'}
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top:0">② 現金の照合</h2>
+    <table>
+      <tr><th>現金で受け取った品目</th><th class="right">数量</th><th class="right">金額</th></tr>
+      ${[...S.cashItems.entries()].map(([n, v]) => `<tr><td>${esc(n)}</td><td class="num">${v.qty}</td><td class="num">${plain(v.amount)}</td></tr>`).join('') || '<tr><td colspan="3" class="muted">現金の売上はありません。</td></tr>'}
+      <tr class="sub"><td>現金の売上 合計</td><td></td><td class="num">${plain(S.byPay['現金'])}</td></tr>
+    </table>
+    <div class="row2" style="margin-top:12px">
+      <div class="field"><label>お釣り用に持ってきた現金</label><input class="amount" id="cl-float" inputmode="numeric" placeholder="0" value="${float ? plain(float) : ''}" ${c ? 'disabled' : ''}></div>
+      <div class="field"><label>いま数えた現金</label><input class="amount" id="cl-counted" inputmode="numeric" placeholder="0" value="${counted ? plain(counted) : ''}" ${c ? 'disabled' : ''}></div>
+    </div>
+    <table>
+      <tr><td>あるはずの現金（お釣り用 ＋ 現金の売上）</td><td class="num" id="cl-expected">${plain(expected)}</td></tr>
+      <tr class="total"><td>差額（数えた現金 − あるはずの現金）</td><td class="num ${diff ? 'out' : ''}" id="cl-diff">${counted || c ? (diff > 0 ? '+' : '') + plain(diff) : '—'}</td></tr>
+    </table>
+    <p class="small muted" style="margin-bottom:0">差額が 0 なら合っています。合わないときは、①で現金の人の支払い方法や数量を確かめてください。</p>
+    <div class="field" style="margin-top:10px"><label>メモ（差額の理由など・なくてもOK）</label><input id="cl-note" value="${esc(c ? c.note : ui.closeNote || '')}" ${c ? 'disabled' : ''}></div>
+    <p class="small">銀行: ${yen(S.byPay['普通預金'])}・あとで（未精算）: ${yen(S.byPay['売掛金'])}</p>
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top:0">③ あとで入金の方（${unpaid.length} 人）</h2>
+    ${unpaid.map(e => `<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:6px 0;border-top:1px solid var(--line)">
+      <div style="flex:1;min-width:200px"><b>${esc(e.partner)}</b>・${yen(e.amount)}<div class="small muted">${esc(itemsText(e.items))}</div></div>
+      <button class="btn" data-settle="${e.id}" data-to="現金">現金で受け取った</button><button class="btn" data-settle="${e.id}" data-to="普通預金">銀行に入金された</button></div>`).join('') || '<p class="small muted" style="margin:0">ありません。</p>'}
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top:0">④ 渡せなかった領収書（${noRcpt.length} 件）</h2>
+    ${noRcpt.map(e => `<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:6px 0;border-top:1px solid var(--line)">
+      <div style="flex:1;min-width:200px"><b>${esc(e.partner)}</b>・${yen(e.amount)}<div class="small">宛名: ${esc(e.receipt.atena)} 様／但し: ${esc(e.receipt.tadashi)}／${esc(e.receipt.reason || '')}</div></div>
+      <button class="btn" data-issue="${e.id}">あとで渡した</button></div>`).join('') || '<p class="small muted" style="margin:0">ありません。</p>'}
+  </div>
+
+  <div class="btns" style="margin-bottom:20px">
+    ${c ? '<button class="btn" id="cl-open">締めを解除する</button><button class="btn primary" id="cl-backup">バックアップを保存</button>'
+      : `<button class="btn primary" id="cl-close" ${canClose ? '' : 'disabled'} style="flex:1">${canClose ? 'この日を締める' : 'まだの方がいるので締められません'}</button>`}
+  </div>`;
+}
+
+function bindSessClose() {
+  const $ = id => document.getElementById(id);
+  const key = sessKey(ui.sess.venue, ui.sess.date);
+  const recalc = () => {
+    const S = sessionSummary(key);
+    ui.closeFloat = $('cl-float').value; ui.closeCounted = $('cl-counted').value; ui.closeNote = $('cl-note').value;
+    const exp = parseAmount(ui.closeFloat) + S.byPay['現金'], cnt = parseAmount(ui.closeCounted), d = cnt - exp;
+    $('cl-expected').textContent = plain(exp);
+    $('cl-diff').textContent = ui.closeCounted ? (d > 0 ? '+' : '') + plain(d) : '—';
+    $('cl-diff').className = 'num ' + (ui.closeCounted && d ? 'out' : '');
+  };
+  ['cl-float', 'cl-counted'].forEach(id => { if ($(id)) $(id).oninput = e => { const v = parseAmount(e.target.value); e.target.value = v ? plain(v) : ''; recalc(); }; });
+  if ($('cl-note')) $('cl-note').oninput = () => { ui.closeNote = $('cl-note').value; };
+  if ($('cl-close')) $('cl-close').onclick = () => {
+    const S = sessionSummary(key);
+    if (S.notDone.length) return;
+    if (!ui.closeCounted && S.byPay['現金'] && !confirm('「いま数えた現金」が空です。現金を数えずに締めますか？')) return;
+    const float = parseAmount(ui.closeFloat || ''), counted = parseAmount(ui.closeCounted || ''), expected = float + S.byPay['現金'];
+    if (ui.closeCounted && counted !== expected && !confirm(`現金が ${yen(counted - expected)} 合っていません。このまま締めますか？（メモに理由を書いておくと後で分かります）`)) return;
+    S.sess.close = { closedAt: Date.now(), float, counted, expected, diff: ui.closeCounted ? counted - expected : null, note: ui.closeNote || '',
+      came: S.came, absent: S.absent, cash: S.byPay['現金'], bank: S.byPay['普通預金'], later: S.byPay['売掛金'] };
+    ui.closeFloat = ui.closeCounted = ui.closeNote = '';
+    save(); render(); toast('締めました。続けてバックアップを保存してください');
+  };
+  if ($('cl-open')) $('cl-open').onclick = () => {
+    if (!confirm('締めを解除しますか？解除すると、この日の記録を直せるようになります。直したら、もう一度締めてください。')) return;
+    const c = sessionData(key).close;
+    ui.closeFloat = c.float ? String(c.float) : ''; ui.closeCounted = c.counted ? String(c.counted) : ''; ui.closeNote = c.note || '';
+    delete sessionData(key).close; save(); render(); toast('締めを解除しました');
+  };
+  if ($('cl-backup')) $('cl-backup').onclick = exportBackup;
+}
+
 // ---------- 設定画面の動作 ----------
 function download(name, text, type) {
   const blob = new Blob([text], { type });
@@ -1248,11 +1384,7 @@ function stamp() { const d = new Date(); return `${d.getFullYear()}${pad(d.getMo
 
 function bindSettings() {
   const $ = id => document.getElementById(id);
-  $('b-export').onclick = async () => {
-    const data = JSON.stringify({ app: 'kaikei', version: APP_VERSION, exported: new Date().toISOString(), state }, null, 1);
-    const ok = await download(`帳簿バックアップ_${stamp()}.json`, data, 'application/json');
-    if (ok) { state.lastBackup = Date.now(); save(); render(); toast('バックアップを保存しました'); }
-  };
+  $('b-export').onclick = exportBackup;
   $('b-update').onclick = checkUpdate;
   $('b-import').onclick = () => $('b-file').click();
   $('b-file').onchange = async e => {
@@ -1330,6 +1462,8 @@ document.addEventListener('click', e => {
   else if (t.dataset.csort) { ui.csort = t.dataset.csort; render(); }
   else if (t.dataset.settle) { settle(t.dataset.settle, t.dataset.to); }
   else if (t.dataset.s) { sessionAction(t); }
+  else if (t.dataset.opensess) { const k = t.dataset.opensess, i = k.lastIndexOf('|'); ui.sess = Object.assign(ui.sess || { filter: 'todo', q: '' }, { venue: k.slice(0, i), date: k.slice(i + 1) }); go('sessclose'); }
+  else if (t.dataset.jump) { ui.sess.filter = 'all'; ui.sess.q = t.dataset.jump; go('session'); }
   else if (t.dataset.sfilter) { ui.sess.filter = t.dataset.sfilter; render(); }
   else if (t.id === 's-save') { t.disabled = true; saveSession(); }
   else if (t.id === 's-addbtn') {
