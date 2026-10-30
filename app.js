@@ -3,7 +3,7 @@
    データはこの端末の中（localStorage）にだけ保存し、外へは送らない。 */
 
 const STORE_KEY = 'kaikei.v1';
-const APP_VERSION = '1.3.1';
+const APP_VERSION = '1.4.0';
 
 // ---------- 勘定科目 ----------
 const EXPENSES = [
@@ -174,7 +174,7 @@ function freshForm(kind) {
 }
 function itemsTotal(items) { return (items || []).reduce((s, it) => s + parseAmount(it.price) * (parseAmount(it.qty) || 0), 0); }
 function cleanItems(items) {
-  return (items || []).map(it => ({ type: it.type === 'treat' ? 'treat' : 'goods', name: String(it.name || '').trim(), price: parseAmount(it.price), qty: parseAmount(it.qty) || 0 }))
+  return (items || []).map(it => ({ type: ITEM_TYPES.some(t => t[0] === it.type) ? it.type : 'goods', name: String(it.name || '').trim(), price: parseAmount(it.price), qty: parseAmount(it.qty) || 0 }))
     .filter(it => it.name || it.price);
 }
 function itemsText(items) { return (items || []).map(it => `${it.name || '（品名なし）'}×${it.qty}`).join('、'); }
@@ -183,6 +183,8 @@ function knownItems() { // 品名 → 最後に使った単価と種類
   for (const e of sorted(state.entries)) for (const it of e.items || []) if (it.name) m.set(it.name, { price: it.price, type: it.type || 'goods' });
   return m;
 }
+const ITEM_TYPES = [['goods', '商品'], ['treat', '施術'], ['measure', '測定']];
+const DEFAULT_PRICE = { measure: 3000 }; // 種類を選んだとき単価が空なら入れる金額
 const blankItem = () => ({ type: 'goods', name: '', price: '', qty: '1' });
 // 掛け売り（売掛金）で、まだ入金を記録していない注文
 function isUnpaid(e) { return e.kind === 'in' && e.dr === '売掛金' && !e.settledBy; }
@@ -310,7 +312,7 @@ function viewInput() {
         <div class="tablewrap"><table id="items">
           <tr><th style="width:96px">種類</th><th>品名・施術名</th><th class="right" style="width:19%">単価</th><th class="right" style="width:12%">数量</th><th class="right" style="width:15%">小計</th><th style="width:44px"></th></tr>
           ${f.items.map((it, i) => `<tr data-row="${i}">
-            <td><select data-it="type">${options([['goods', '商品'], ['treat', '施術']], it.type || 'goods')}</select></td>
+            <td><select data-it="type">${options(ITEM_TYPES, it.type || 'goods')}</select></td>
             <td><input data-it="name" list="itemnames" value="${esc(it.name)}" autocomplete="off"></td>
             <td><input data-it="price" class="num" inputmode="numeric" value="${it.price ? plain(parseAmount(it.price)) : ''}"></td>
             <td><input data-it="qty" class="num" inputmode="numeric" value="${esc(it.qty)}"></td>
@@ -388,8 +390,17 @@ function bindInput() {
   };
   if ($('items')) {
     const known = knownItems();
+    $('items').addEventListener('change', e => {
+      if (e.target.dataset.it !== 'type') return;
+      const tr = e.target.closest('tr'), def = DEFAULT_PRICE[e.target.value];
+      const price = tr.querySelector('[data-it=price]'), name = tr.querySelector('[data-it=name]');
+      if (def && !parseAmount(price.value)) price.value = plain(def);
+      if (e.target.value === 'measure' && !name.value) name.value = '測定';
+      refreshTotal();
+    });
     $('items').addEventListener('input', e => {
       const k = e.target.dataset.it;
+      if (k === 'type') return;
       if (k === 'price' || k === 'qty') { const v = parseAmount(e.target.value); e.target.value = v ? (k === 'price' ? plain(v) : String(v)) : ''; }
       if (k === 'name' && known.has(e.target.value)) {
         const tr = e.target.closest('tr'), kn = known.get(e.target.value);
@@ -621,11 +632,11 @@ function customerStats(venue) {
   for (const e of sorted(state.entries)) {
     if (e.kind !== 'in' || !e.partner) continue;
     if (venue && e.venue !== venue) continue;
-    const c = m.get(e.partner) || { name: e.partner, orders: 0, treats: 0, goods: 0, total: 0, unpaid: 0, last: '', venues: new Set() };
+    const c = m.get(e.partner) || { name: e.partner, orders: 0, treats: 0, measures: 0, goods: 0, total: 0, unpaid: 0, last: '', venues: new Set() };
     if (e.venue) c.venues.add(e.venue);
     c.orders++;
     c.total += e.amount;
-    for (const it of e.items || []) { if (it.type === 'treat') c.treats += it.qty; else c.goods += it.qty; }
+    for (const it of e.items || []) { if (it.type === 'treat') c.treats += it.qty; else if (it.type === 'measure') c.measures += it.qty; else c.goods += it.qty; }
     if (isUnpaid(e)) c.unpaid += e.amount;
     const d = e.orderDate || e.date; if (d > c.last) c.last = d;
     m.set(e.partner, c);
@@ -643,11 +654,11 @@ function venueStats(ents) { // 会場ごと（会場なしは「共通」）の�
   for (const e of ents) {
     if (e.kind !== 'in' && e.kind !== 'out') continue;
     const k = e.venue || '';
-    const v = m.get(k) || { name: k, revenue: 0, cost: 0, unpaid: 0, members: new Set(), orders: 0, treats: 0, last: '' };
+    const v = m.get(k) || { name: k, revenue: 0, cost: 0, unpaid: 0, members: new Set(), orders: 0, treats: 0, measures: 0, last: '' };
     if (e.kind === 'in') {
       v.revenue += e.amount; v.orders++;
       if (e.partner) v.members.add(e.partner);
-      for (const it of e.items || []) if (it.type === 'treat') v.treats += it.qty;
+      for (const it of e.items || []) { if (it.type === 'treat') v.treats += it.qty; if (it.type === 'measure') v.measures += it.qty; }
       if (isUnpaid(e)) v.unpaid += e.amount;
     } else v.cost += e.amount;
     const d = e.orderDate || e.date; if (d > v.last) v.last = d;
@@ -681,7 +692,7 @@ function viewVenues() {
   const vs = venueStats(ents);
   const rows = vs.map(v => `<button class="item" data-venue="${esc(v.name)}" style="grid-template-columns:1fr auto">
       <div><div class="main">${v.name ? esc(v.name) : '共通（会場なし）'}${v.unpaid ? ` <span class="badge out">未精算 ${yen(v.unpaid)}</span>` : ''}</div>
-        <div class="sub">参加 ${v.members.size} 人・注文 ${v.orders} 回・施術 ${v.treats} 回・経費 ${yen(v.cost)}</div></div>
+        <div class="sub">参加 ${v.members.size} 人・注文 ${v.orders} 回・施術 ${v.treats} 回・測定 ${v.measures} 回・経費 ${yen(v.cost)}</div></div>
       <div class="num">${yen(v.revenue - v.cost)}<div class="muted small">差し引き</div></div></button>`).join('');
   return `${peopleTabs('venues')}
   ${periodSelects()}
@@ -698,9 +709,9 @@ function viewVenue() {
     const m = new Map();
     for (const e of ents) {
       if (e.kind !== 'in' || !e.partner) continue;
-      const c = m.get(e.partner) || { name: e.partner, orders: 0, treats: 0, goods: 0, total: 0, unpaid: 0, last: '' };
+      const c = m.get(e.partner) || { name: e.partner, orders: 0, treats: 0, measures: 0, goods: 0, total: 0, unpaid: 0, last: '' };
       c.orders++; c.total += e.amount;
-      for (const it of e.items || []) { if (it.type === 'treat') c.treats += it.qty; else c.goods += it.qty; }
+      for (const it of e.items || []) { if (it.type === 'treat') c.treats += it.qty; else if (it.type === 'measure') c.measures += it.qty; else c.goods += it.qty; }
       if (isUnpaid(e)) c.unpaid += e.amount;
       const d = e.orderDate || e.date; if (d > c.last) c.last = d;
       m.set(e.partner, c);
@@ -722,10 +733,10 @@ function viewVenue() {
 
   <h2>参加メンバー（${members.length} 人）</h2>
   <div class="card tablewrap"><table>
-    <tr><th>お名前</th><th class="right">注文</th><th class="right">施術</th><th class="right">商品</th><th class="right">金額</th><th class="right">精算</th></tr>
+    <tr><th>お名前</th><th class="right">注文</th><th class="right">施術</th><th class="right">測定</th><th class="right">商品</th><th class="right">金額</th><th class="right">精算</th></tr>
     ${members.map(c => `<tr><td><button class="btn" data-cust="${esc(c.name)}" style="min-height:36px;padding:4px 10px">${esc(c.name)}</button></td>
-      <td class="num">${c.orders}回</td><td class="num">${c.treats}回</td><td class="num">${c.goods}点</td><td class="num">${plain(c.total)}</td>
-      <td class="num ${c.unpaid ? 'out' : ''}">${c.unpaid ? '未 ' + plain(c.unpaid) : '済'}</td></tr>`).join('') || '<tr><td colspan="6" class="muted">この期間の参加者の記録はありません。</td></tr>'}
+      <td class="num">${c.orders}回</td><td class="num">${c.treats}回</td><td class="num">${c.measures}回</td><td class="num">${c.goods}点</td><td class="num">${plain(c.total)}</td>
+      <td class="num ${c.unpaid ? 'out' : ''}">${c.unpaid ? '未 ' + plain(c.unpaid) : '済'}</td></tr>`).join('') || '<tr><td colspan="7" class="muted">この期間の参加者の記録はありません。</td></tr>'}
   </table></div>
 
   <h2>経費・仕入の内訳</h2>
@@ -761,7 +772,7 @@ function viewCustomers() {
   const unpaidTotal = list.reduce((s, c) => s + c.unpaid, 0);
   const rows = list.map(c => `<button class="item" data-cust="${esc(c.name)}" style="grid-template-columns:1fr auto">
       <div><div class="main">${esc(c.name)}${c.unpaid ? ` <span class="badge out">未精算 ${yen(c.unpaid)}</span>` : ''}</div>
-        <div class="sub">最後: ${jdate(c.last)}・注文 ${c.orders} 回・施術 ${c.treats} 回・商品 ${c.goods} 点${c.venues.size ? '・' + esc([...c.venues].join('、')) : ''}</div></div>
+        <div class="sub">最後: ${jdate(c.last)}・注文 ${c.orders} 回・施術 ${c.treats} 回・測定 ${c.measures} 回・商品 ${c.goods} 点${c.venues.size ? '・' + esc([...c.venues].join('、')) : ''}</div></div>
       <div class="num">${yen(c.total)}</div></button>`).join('');
   return `${peopleTabs('customers')}
   <div class="row2">
@@ -777,17 +788,18 @@ function viewCustomers() {
 function viewCustomer() {
   const name = ui.customer;
   const ents = sorted(state.entries.filter(e => e.kind === 'in' && e.partner === name)).reverse();
-  const c = customerStats().find(x => x.name === name) || { orders: 0, treats: 0, goods: 0, total: 0, unpaid: 0 };
-  const treats = [], goods = new Map();
+  const c = customerStats().find(x => x.name === name) || { orders: 0, treats: 0, measures: 0, goods: 0, total: 0, unpaid: 0 };
+  const treats = [], measures = [], goods = new Map();
   for (const e of ents) for (const it of e.items || []) {
     if (it.type === 'treat') treats.push({ e, it });
+    else if (it.type === 'measure') measures.push({ e, it });
     else { const g = goods.get(it.name) || { qty: 0, amount: 0, last: '' }; g.qty += it.qty; g.amount += it.price * it.qty; const d = e.orderDate || e.date; if (d > g.last) g.last = d; goods.set(it.name, g); }
   }
   const unpaid = ents.filter(isUnpaid);
   return `<button class="btn" data-go="customers">◀ お客様の一覧</button>
   <h2>${esc(name)}</h2>
   <div class="stats">
-    <div class="stat"><div class="label">施術を受けた回数</div><div class="value">${c.treats} 回</div></div>
+    <div class="stat"><div class="label">施術・測定の回数</div><div class="value">施術 ${c.treats} 回・測定 ${c.measures} 回</div></div>
     <div class="stat"><div class="label">注文の回数・合計</div><div class="value">${c.orders} 回・${yen(c.total)}</div></div>
     <div class="stat"><div class="label">精算</div><div class="value ${c.unpaid ? 'out' : ''}">${c.unpaid ? '未精算 ' + yen(c.unpaid) : 'すべて完了'}</div></div>
   </div>
@@ -803,6 +815,12 @@ function viewCustomer() {
   <div class="card tablewrap"><table>
     <tr><th>日付</th><th>施術</th><th class="right">回数</th><th class="right">金額</th><th>内容</th></tr>
     ${treats.map(({ e, it }) => `<tr><td>${jdate(e.orderDate || e.date)}</td><td>${esc(it.name)}</td><td class="num">${it.qty}</td><td class="num">${plain(it.price * it.qty)}</td><td class="small">${esc(e.treatment)}</td></tr>`).join('') || '<tr><td colspan="5" class="muted">施術の記録はありません。</td></tr>'}
+  </table></div>
+
+  <h2>測定の履歴（${measures.length} 件）</h2>
+  <div class="card tablewrap"><table>
+    <tr><th>日付</th><th>測定</th><th class="right">回数</th><th class="right">金額</th></tr>
+    ${measures.map(({ e, it }) => `<tr><td>${jdate(e.orderDate || e.date)}</td><td>${esc(it.name)}</td><td class="num">${it.qty}</td><td class="num">${plain(it.price * it.qty)}</td></tr>`).join('') || '<tr><td colspan="4" class="muted">測定の記録はありません。</td></tr>'}
   </table></div>
 
   <h2>注文した商品</h2>
