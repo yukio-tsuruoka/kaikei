@@ -3,7 +3,7 @@
    データはこの端末の中（localStorage）にだけ保存し、外へは送らない。 */
 
 const STORE_KEY = 'kaikei.v1';
-const APP_VERSION = '1.5.1';
+const APP_VERSION = '1.6.0';
 
 // ---------- 勘定科目 ----------
 const EXPENSES = [
@@ -70,7 +70,7 @@ const METHOD_LABEL = Object.fromEntries([...RECV_METHODS, ...PAY_METHODS]);
 
 // ---------- データ ----------
 let state = load();
-function blank() { return { entries: [], years: {}, customExpenses: [], customers: {}, lastBackup: null, seq: 1 }; }
+function blank() { return { entries: [], years: {}, customExpenses: [], customers: {}, prices: {}, lastBackup: null, seq: 1 }; }
 const DEFAULT_TADASHI = 'お品代として';
 // お客様ごとの領収書の設定 { receipt: true/false, atena, tadashi }
 function profile(name) { return (state.customers || {})[name] || null; }
@@ -192,10 +192,17 @@ const ITEM_TYPES = [['goods', '商品'], ['treat', '施術'], ['measure', '測�
 const DEFAULT_PRICE = { measure: 3000 }; // 種類を選んだとき単価が空なら入れる金額
 const blankItem = () => ({ type: 'goods', name: '', price: '', qty: '' });
 // 新しい注文の最初の行：商品・施術・測定を1行ずつ（数量を入れた行だけが保存される）
+// 商品の大きさ（新しい注文の最初の行になる）と、設定で決めた単価
+const PRODUCT_SIZES = ['2L', '500ml', '30ml'];
+function unitPrice(name) {
+  const v = (state.prices || {})[name];
+  if (v) return v;
+  return name === '測定' ? DEFAULT_PRICE.measure : 0;
+}
 const defaultItems = () => [
-  { type: 'goods', name: '', price: '', qty: '' },
+  ...PRODUCT_SIZES.map(n => ({ type: 'goods', name: n, price: unitPrice(n) ? String(unitPrice(n)) : '', qty: '' })),
   { type: 'treat', name: '', price: '', qty: '' },
-  { type: 'measure', name: '測定', price: String(DEFAULT_PRICE.measure), qty: '' },
+  { type: 'measure', name: '測定', price: String(unitPrice('測定')), qty: '' },
 ];
 // 掛け売り（売掛金）で、まだ入金を記録していない注文
 function isUnpaid(e) { return e.kind === 'in' && e.dr === '売掛金' && !e.settledBy; }
@@ -438,7 +445,7 @@ function bindInput() {
     const known = knownItems();
     $('items').addEventListener('change', e => {
       if (e.target.dataset.it !== 'type') return;
-      const tr = e.target.closest('tr'), def = DEFAULT_PRICE[e.target.value];
+      const tr = e.target.closest('tr'), def = e.target.value === 'measure' ? unitPrice('測定') : 0;
       const price = tr.querySelector('[data-it=price]'), name = tr.querySelector('[data-it=name]');
       if (def && !parseAmount(price.value)) price.value = plain(def);
       if (e.target.value === 'measure' && !name.value) name.value = '測定';
@@ -983,6 +990,14 @@ function viewSettings() {
   </div>
 
   <div class="card">
+    <h2 style="margin-top:0">商品・測定の単価</h2>
+    <p class="small">新しい注文の行に、最初から入る単価です。入れておくと、数量を入れるだけで金額が計算されます。</p>
+    <div class="row2">${[...PRODUCT_SIZES, '測定'].map(n => `<div class="field"><label>${esc(n)}</label>
+      <input class="amount" data-price="${esc(n)}" inputmode="numeric" placeholder="0" value="${unitPrice(n) ? plain(unitPrice(n)) : ''}"></div>`).join('')}</div>
+    <button class="btn primary" id="pr-save">単価を保存</button>
+  </div>
+
+  <div class="card">
     <h2 style="margin-top:0">経費の科目を追加</h2>
     <p class="small">決算書の空いている欄に書く科目を増やせます（例: 研修費、リース料）。</p>
     <div class="row2"><div class="field"><input id="c-name" placeholder="科目の名前"></div><div><button class="btn" id="c-add">追加</button></div></div>
@@ -1060,6 +1075,12 @@ function bindSettings() {
     const cur = yearData(y);
     state.years[y] = Object.assign({}, cur, { opening, openingInventory: yearData(py).closingInventory });
     save(); render(); toast('繰り越しました。確認して必要なら直してください');
+  };
+  document.querySelectorAll('[data-price]').forEach(inp => inp.oninput = () => { const v = parseAmount(inp.value); inp.value = v ? plain(v) : ''; });
+  $('pr-save').onclick = () => {
+    state.prices = state.prices || {};
+    document.querySelectorAll('[data-price]').forEach(inp => { state.prices[inp.dataset.price] = parseAmount(inp.value); });
+    save(); ui.form = null; render(); toast('単価を保存しました');
   };
   $('c-add').onclick = () => {
     const n = $('c-name').value.trim();
