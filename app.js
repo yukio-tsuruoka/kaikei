@@ -3,7 +3,7 @@
    データはこの端末の中（localStorage）にだけ保存し、外へは送らない。 */
 
 const STORE_KEY = 'kaikei.v1';
-const APP_VERSION = '1.1.0';
+const APP_VERSION = '1.2.0';
 
 // ---------- 勘定科目 ----------
 const EXPENSES = [
@@ -169,20 +169,23 @@ function freshForm(kind) {
     date: (prev && prev.date) || today(),
     acc: '', method: '', preset: '', dr: '', cr: '',
     amount: '', partner: '', memo: '', editId: null,
-    orderDate: '', items: [{ name: '', price: '', qty: '1' }], treatment: '',
+    orderDate: '', items: [blankItem()], treatment: '',
   };
 }
 function itemsTotal(items) { return (items || []).reduce((s, it) => s + parseAmount(it.price) * (parseAmount(it.qty) || 0), 0); }
 function cleanItems(items) {
-  return (items || []).map(it => ({ name: String(it.name || '').trim(), price: parseAmount(it.price), qty: parseAmount(it.qty) || 0 }))
+  return (items || []).map(it => ({ type: it.type === 'treat' ? 'treat' : 'goods', name: String(it.name || '').trim(), price: parseAmount(it.price), qty: parseAmount(it.qty) || 0 }))
     .filter(it => it.name || it.price);
 }
 function itemsText(items) { return (items || []).map(it => `${it.name || '（品名なし）'}×${it.qty}`).join('、'); }
-function knownItems() { // 品名 → 最後に使った単価
+function knownItems() { // 品名 → 最後に使った単価と種類
   const m = new Map();
-  for (const e of sorted(state.entries)) for (const it of e.items || []) if (it.name) m.set(it.name, it.price);
+  for (const e of sorted(state.entries)) for (const it of e.items || []) if (it.name) m.set(it.name, { price: it.price, type: it.type || 'goods' });
   return m;
 }
+const blankItem = () => ({ type: 'goods', name: '', price: '', qty: '1' });
+// 掛け売り（売掛金）で、まだ入金を記録していない注文
+function isUnpaid(e) { return e.kind === 'in' && e.dr === '売掛金' && !e.settledBy; }
 
 function go(view, opts) {
   ui.view = view;
@@ -200,9 +203,10 @@ function toast(msg) {
 
 // ---------- 描画 ----------
 function render() {
-  document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.go === ui.view));
   const v = document.getElementById('view');
-  v.innerHTML = ({ home: viewHome, input: viewInput, list: viewList, summary: viewSummary, settings: viewSettings, ledger: viewLedger })[ui.view]();
+  const tab = ui.view === 'customer' ? 'customers' : ui.view === 'ledger' ? 'list' : ui.view;
+  document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.go === tab));
+  v.innerHTML = ({ home: viewHome, input: viewInput, list: viewList, summary: viewSummary, settings: viewSettings, ledger: viewLedger, customers: viewCustomers, customer: viewCustomer })[ui.view]();
   if (ui.view === 'input') bindInput();
   if (ui.view === 'settings') bindSettings();
 }
@@ -220,7 +224,7 @@ function itemHtml(e) {
   const [, mm, dd] = e.date.split('-');
   return `<button class="item" data-edit="${e.id}">
     <div class="d">${+mm}/${+dd}</div>
-    <div><div class="main"><span class="badge ${t.cls}">${KIND_LABEL[e.kind]}</span>${esc(t.main)}</div>
+    <div><div class="main"><span class="badge ${t.cls}">${KIND_LABEL[e.kind]}</span>${esc(t.main)}${isUnpaid(e) ? ' <span class="badge out">未精算</span>' : ''}</div>
       <div class="sub">${esc(t.sub)}${extra ? '・' + extra : ''}</div></div>
     <div class="num ${t.cls}">${e.kind === 'out' ? '−' : ''}${yen(e.amount)}</div>
   </button>`;
@@ -237,6 +241,8 @@ function viewHome() {
     if (days === null || days >= 7) banner = `<div class="banner">${days === null ? 'まだバックアップがありません。' : `最後のバックアップから ${days} 日たっています。`}
       「設定」→「バックアップを保存」で、帳簿のコピーを残してください。</div>`;
   }
+  const unpaid = state.entries.filter(isUnpaid).reduce((a, e) => a + e.amount, 0);
+  if (unpaid) banner += `<div class="banner">まだ入金されていない注文が <b>${yen(unpaid)}</b> あります。「お客様」で確認できます。</div>`;
   return `${banner}
   <h2>${m}月の状況</h2>
   <div class="stats">
@@ -302,8 +308,9 @@ function viewInput() {
         </div>
         <label class="muted small">注文の内容（単価×数量の合計が金額に入ります）</label>
         <div class="tablewrap"><table id="items">
-          <tr><th>品名・施術名</th><th class="right" style="width:22%">単価</th><th class="right" style="width:14%">数量</th><th class="right" style="width:18%">小計</th><th style="width:44px"></th></tr>
+          <tr><th style="width:96px">種類</th><th>品名・施術名</th><th class="right" style="width:19%">単価</th><th class="right" style="width:12%">数量</th><th class="right" style="width:15%">小計</th><th style="width:44px"></th></tr>
           ${f.items.map((it, i) => `<tr data-row="${i}">
+            <td><select data-it="type">${options([['goods', '商品'], ['treat', '施術']], it.type || 'goods')}</select></td>
             <td><input data-it="name" list="itemnames" value="${esc(it.name)}" autocomplete="off"></td>
             <td><input data-it="price" class="num" inputmode="numeric" value="${it.price ? plain(parseAmount(it.price)) : ''}"></td>
             <td><input data-it="qty" class="num" inputmode="numeric" value="${esc(it.qty)}"></td>
@@ -362,7 +369,7 @@ function bindInput() {
       f.orderDate = $('f-order').value;
       f.treatment = $('f-treat').value.trim();
       f.items = [...document.querySelectorAll('[data-row]')].map(tr => ({
-        name: tr.querySelector('[data-it=name]').value, price: tr.querySelector('[data-it=price]').value, qty: tr.querySelector('[data-it=qty]').value,
+        type: tr.querySelector('[data-it=type]').value, name: tr.querySelector('[data-it=name]').value, price: tr.querySelector('[data-it=price]').value, qty: tr.querySelector('[data-it=qty]').value,
       }));
     }
   };
@@ -380,16 +387,18 @@ function bindInput() {
     $('items').addEventListener('input', e => {
       const k = e.target.dataset.it;
       if (k === 'price' || k === 'qty') { const v = parseAmount(e.target.value); e.target.value = v ? (k === 'price' ? plain(v) : String(v)) : ''; }
-      if (k === 'name') {
-        const price = e.target.closest('tr').querySelector('[data-it=price]');
-        if (!price.value && known.has(e.target.value)) price.value = plain(known.get(e.target.value));
+      if (k === 'name' && known.has(e.target.value)) {
+        const tr = e.target.closest('tr'), kn = known.get(e.target.value);
+        const price = tr.querySelector('[data-it=price]');
+        if (!price.value) price.value = plain(kn.price);
+        tr.querySelector('[data-it=type]').value = kn.type;
       }
       refreshTotal();
     });
-    $('f-addrow').onclick = () => { sync(); f.items.push({ name: '', price: '', qty: '1' }); render(); };
+    $('f-addrow').onclick = () => { sync(); f.items.push(blankItem()); render(); };
     document.querySelectorAll('[data-delrow]').forEach(b => b.onclick = () => {
       sync(); f.items.splice(+b.dataset.delrow, 1);
-      if (!f.items.length) f.items.push({ name: '', price: '', qty: '1' });
+      if (!f.items.length) f.items.push(blankItem());
       render();
     });
   }
@@ -443,8 +452,13 @@ function bindInput() {
   };
   if ($('f-cancel')) $('f-cancel').onclick = () => { ui.form = freshForm(); go('list'); };
   if ($('f-delete')) $('f-delete').onclick = () => {
-    if (!confirm('この記録を削除しますか？')) return;
-    state.entries = state.entries.filter(e => e.id !== f.editId);
+    const en = state.entries.find(e => e.id === f.editId);
+    const link = en && en.settledBy ? '\nこの注文の入金の記録も一緒に削除します。' : '';
+    if (!confirm('この記録を削除しますか？' + link)) return;
+    const gone = new Set([f.editId, en && en.settledBy].filter(Boolean));
+    state.entries = state.entries.filter(e => !gone.has(e.id));
+    // 消したのが入金の記録なら、その注文を「未精算」に戻す
+    for (const e of state.entries) if (gone.has(e.settledBy)) { delete e.settledBy; delete e.settledDate; }
     save(); toast('削除しました'); ui.form = freshForm(); go('list');
   };
 }
@@ -596,6 +610,94 @@ function itemSalesHtml(ents) {
   </table></div>`;
 }
 
+// ---------- お客様 ----------
+function customerStats() {
+  const m = new Map();
+  for (const e of sorted(state.entries)) {
+    if (e.kind !== 'in' || !e.partner) continue;
+    const c = m.get(e.partner) || { name: e.partner, orders: 0, treats: 0, goods: 0, total: 0, unpaid: 0, last: '' };
+    c.orders++;
+    c.total += e.amount;
+    for (const it of e.items || []) { if (it.type === 'treat') c.treats += it.qty; else c.goods += it.qty; }
+    if (isUnpaid(e)) c.unpaid += e.amount;
+    const d = e.orderDate || e.date; if (d > c.last) c.last = d;
+    m.set(e.partner, c);
+  }
+  return [...m.values()];
+}
+function jdate(d) { if (!d) return ''; const [y, m, dd] = d.split('-'); return `${y}/${+m}/${+dd}`; }
+
+function viewCustomers() {
+  const q = (ui.csearch || '').trim();
+  let list = customerStats();
+  if (q) list = list.filter(c => c.name.includes(q));
+  const sort = ui.csort || 'last';
+  list.sort((a, b) => sort === 'unpaid' ? b.unpaid - a.unpaid || (b.last > a.last ? 1 : -1) : sort === 'name' ? a.name.localeCompare(b.name, 'ja') : (b.last > a.last ? 1 : -1));
+  const unpaidTotal = list.reduce((s, c) => s + c.unpaid, 0);
+  const rows = list.map(c => `<button class="item" data-cust="${esc(c.name)}" style="grid-template-columns:1fr auto">
+      <div><div class="main">${esc(c.name)}${c.unpaid ? ` <span class="badge out">未精算 ${yen(c.unpaid)}</span>` : ''}</div>
+        <div class="sub">最後: ${jdate(c.last)}・注文 ${c.orders} 回・施術 ${c.treats} 回・商品 ${c.goods} 点</div></div>
+      <div class="num">${yen(c.total)}</div></button>`).join('');
+  return `<h2>お客様</h2>
+  <div class="field"><input id="c-search" placeholder="お名前で探す" value="${esc(q)}"></div>
+  <div class="seg">${[['last', '最近の順'], ['unpaid', '未精算の多い順'], ['name', '名前の順']].map(([k, l]) => `<button data-csort="${k}" class="${sort === k ? 'on' : ''}">${l}</button>`).join('')}</div>
+  ${unpaidTotal ? `<div class="banner">未精算（まだ入金されていない分）の合計: <b>${yen(unpaidTotal)}</b></div>` : ''}
+  <div class="list">${rows || '<div class="empty">まだお客様の記録がありません。「＋ 収入」でお客様の名前を入れると、ここに出ます。</div>'}</div>
+  <p class="muted small">「あとで入金（売掛金）」で記録した注文が「未精算」になります。</p>`;
+}
+
+function viewCustomer() {
+  const name = ui.customer;
+  const ents = sorted(state.entries.filter(e => e.kind === 'in' && e.partner === name)).reverse();
+  const c = customerStats().find(x => x.name === name) || { orders: 0, treats: 0, goods: 0, total: 0, unpaid: 0 };
+  const treats = [], goods = new Map();
+  for (const e of ents) for (const it of e.items || []) {
+    if (it.type === 'treat') treats.push({ e, it });
+    else { const g = goods.get(it.name) || { qty: 0, amount: 0, last: '' }; g.qty += it.qty; g.amount += it.price * it.qty; const d = e.orderDate || e.date; if (d > g.last) g.last = d; goods.set(it.name, g); }
+  }
+  const unpaid = ents.filter(isUnpaid);
+  return `<button class="btn" data-go="customers">◀ お客様の一覧</button>
+  <h2>${esc(name)}</h2>
+  <div class="stats">
+    <div class="stat"><div class="label">施術を受けた回数</div><div class="value">${c.treats} 回</div></div>
+    <div class="stat"><div class="label">注文の回数・合計</div><div class="value">${c.orders} 回・${yen(c.total)}</div></div>
+    <div class="stat"><div class="label">精算</div><div class="value ${c.unpaid ? 'out' : ''}">${c.unpaid ? '未精算 ' + yen(c.unpaid) : 'すべて完了'}</div></div>
+  </div>
+
+  ${unpaid.length ? `<h2>まだ入金されていない注文</h2>
+  <div class="card">${unpaid.map(e => `<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:6px 0;border-bottom:1px solid var(--line)">
+      <div style="flex:1;min-width:200px">${jdate(e.orderDate || e.date)}・${esc(itemsText(e.items) || e.memo || '注文')}<div class="num out" style="text-align:left">${yen(e.amount)}</div></div>
+      <button class="btn primary" data-settle="${e.id}" data-to="現金">現金で受け取った</button>
+      <button class="btn primary" data-settle="${e.id}" data-to="普通預金">銀行に入金された</button></div>`).join('')}
+    <p class="muted small" style="margin-bottom:0">ボタンを押すと、今日の日付で入金の記録を作り、「精算済み」にします。</p></div>` : ''}
+
+  <h2>施術の履歴（${treats.length} 件）</h2>
+  <div class="card tablewrap"><table>
+    <tr><th>日付</th><th>施術</th><th class="right">回数</th><th class="right">金額</th><th>内容</th></tr>
+    ${treats.map(({ e, it }) => `<tr><td>${jdate(e.orderDate || e.date)}</td><td>${esc(it.name)}</td><td class="num">${it.qty}</td><td class="num">${plain(it.price * it.qty)}</td><td class="small">${esc(e.treatment)}</td></tr>`).join('') || '<tr><td colspan="5" class="muted">施術の記録はありません。</td></tr>'}
+  </table></div>
+
+  <h2>注文した商品</h2>
+  <div class="card tablewrap"><table>
+    <tr><th>商品</th><th class="right">合計数量</th><th class="right">合計金額</th><th class="right">最後の注文</th></tr>
+    ${[...goods.entries()].sort((a, b) => b[1].qty - a[1].qty).map(([n, g]) => `<tr><td>${esc(n)}</td><td class="num">${g.qty}</td><td class="num">${plain(g.amount)}</td><td class="num">${jdate(g.last)}</td></tr>`).join('') || '<tr><td colspan="4" class="muted">商品の注文はありません。</td></tr>'}
+  </table></div>
+
+  <h2>すべての注文（押すと直せます）</h2>
+  <div class="list">${ents.map(e => itemHtml(e)).join('') || '<div class="empty">記録はありません。</div>'}</div>`;
+}
+
+function settle(id, to) {
+  const order = state.entries.find(e => e.id === id);
+  if (!order || !isUnpaid(order)) return;
+  if (!confirm(`${order.partner} 様の ${yen(order.amount)} を「${to === '現金' ? '現金で受け取った' : '銀行に入金された'}」として、精算済みにします。よろしいですか？`)) return;
+  const pay = { id: newId(), created: Date.now(), date: today(), kind: 'move', preset: 'ar', dr: to, cr: '売掛金', amount: order.amount,
+    partner: order.partner, memo: `${jdate(order.orderDate || order.date)}の注文の入金`, settles: order.id };
+  state.entries.push(pay);
+  order.settledBy = pay.id; order.settledDate = pay.date;
+  save(); render(); toast('精算済みにしました');
+}
+
 function viewSettings() {
   const y = ui.year;
   const d = yearData(y);
@@ -729,9 +831,12 @@ document.addEventListener('click', e => {
     ui.form = { kind: en.kind, date: en.date, amount: String(en.amount), partner: en.partner || '', memo: en.memo || '', editId: en.id,
       acc: en.kind === 'in' ? en.cr : en.dr, method: en.kind === 'in' ? en.dr : en.cr, preset: en.preset || '', dr: en.dr, cr: en.cr,
       orderDate: en.orderDate || '', treatment: en.treatment || '',
-      items: en.items && en.items.length ? en.items.map(it => ({ name: it.name, price: String(it.price), qty: String(it.qty) })) : [{ name: '', price: '', qty: '1' }] };
+      items: en.items && en.items.length ? en.items.map(it => ({ type: it.type || 'goods', name: it.name, price: String(it.price), qty: String(it.qty) })) : [blankItem()] };
     go('input');
-  } else if (t.dataset.mon) {
+  } else if (t.dataset.cust) { ui.customer = t.dataset.cust; go('customer'); }
+  else if (t.dataset.csort) { ui.csort = t.dataset.csort; render(); }
+  else if (t.dataset.settle) { settle(t.dataset.settle, t.dataset.to); }
+  else if (t.dataset.mon) {
     ui.search = '';
     let { y, m } = ui.ym; m += +t.dataset.mon;
     if (m < 1) { m = 12; y--; } if (m > 12) { m = 1; y++; }
@@ -744,11 +849,12 @@ document.addEventListener('change', e => {
   if (e.target.id === 'l-acc') { ui.ledgerAcc = e.target.value; render(); }
 });
 document.addEventListener('input', e => {
-  if (e.target.id === 'search') {
-    ui.search = e.target.value;
+  if (e.target.id === 'search' || e.target.id === 'c-search') {
+    const id = e.target.id;
+    if (id === 'search') ui.search = e.target.value; else ui.csearch = e.target.value;
     const pos = e.target.selectionStart;
     render();
-    const s = document.getElementById('search'); s.focus(); s.setSelectionRange(pos, pos);
+    const s = document.getElementById(id); s.focus(); s.setSelectionRange(pos, pos);
   }
 });
 // ---------- 起動 ----------
