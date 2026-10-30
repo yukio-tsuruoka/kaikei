@@ -3,7 +3,7 @@
    データはこの端末の中（localStorage）にだけ保存し、外へは送らない。 */
 
 const STORE_KEY = 'kaikei.v1';
-const APP_VERSION = '1.6.0';
+const APP_VERSION = '1.7.0';
 
 // ---------- 勘定科目 ----------
 const EXPENSES = [
@@ -199,6 +199,17 @@ function unitPrice(name) {
   if (v) return v;
   return name === '測定' ? DEFAULT_PRICE.measure : 0;
 }
+const PRICED_NAMES = () => [...PRODUCT_SIZES, '測定'];
+// お客様ごとの単価があればそれ、なければ設定の標準の単価
+function priceFor(customer, name) {
+  const pr = profile(customer);
+  const v = pr && pr.prices ? pr.prices[name] : 0;
+  return v || unitPrice(name);
+}
+// 注文の行の単価を、そのお客様の単価にそろえる（商品3種と測定の行だけ）
+function applyCustomerPrices(items, customer) {
+  for (const it of items) if (PRICED_NAMES().includes(it.name)) { const v = priceFor(customer, it.name); it.price = v ? String(v) : ''; }
+}
 const defaultItems = () => [
   ...PRODUCT_SIZES.map(n => ({ type: 'goods', name: n, price: unitPrice(n) ? String(unitPrice(n)) : '', qty: '' })),
   { type: 'treat', name: '', price: '', qty: '' },
@@ -313,6 +324,7 @@ function viewInput() {
     const pr = profile(f.partner);
     Object.assign(f, { rcpt: pr.receipt ? 'yes' : 'no', atena: pr.atena || '', tadashi: pr.tadashi || '' });
   }
+  if (f.kind === 'in' && !f.editId && f.pricedFor !== f.partner) { applyCustomerPrices(f.items, f.partner); f.pricedFor = f.partner; }
   const kinds = [['out', '支出'], ['in', '収入'], ['move', 'お金の移動'], ['journal', '振替（上級）']];
   let body = '';
   const partners = [...new Set(state.entries.map(e => e.partner).filter(Boolean))];
@@ -445,7 +457,7 @@ function bindInput() {
     const known = knownItems();
     $('items').addEventListener('change', e => {
       if (e.target.dataset.it !== 'type') return;
-      const tr = e.target.closest('tr'), def = e.target.value === 'measure' ? unitPrice('測定') : 0;
+      const tr = e.target.closest('tr'), def = e.target.value === 'measure' ? priceFor($('f-partner').value.trim(), '測定') : 0;
       const price = tr.querySelector('[data-it=price]'), name = tr.querySelector('[data-it=name]');
       if (def && !parseAmount(price.value)) price.value = plain(def);
       if (e.target.value === 'measure' && !name.value) name.value = '測定';
@@ -491,7 +503,15 @@ function bindInput() {
   if ($('f-rcpt')) {
     const applyProfile = () => { // お客様の名前が入ったら、その人の領収書の設定を入れる
       const nm = $('f-partner').value.trim(), pr = profile(nm);
-      $('rcpt-hint').textContent = pr ? `${nm} 様の設定: ${pr.receipt ? '領収書が必要' : '領収書は不要'}` : '';
+      if (!f.editId) { // その方の単価を、商品3種と測定の行に入れ直す
+        document.querySelectorAll('[data-row]').forEach(tr => {
+          const name = tr.querySelector('[data-it=name]').value;
+          if (PRICED_NAMES().includes(name)) { const v = priceFor(nm, name); tr.querySelector('[data-it=price]').value = v ? plain(v) : ''; }
+        });
+        f.pricedFor = nm; refreshTotal();
+      }
+      const special = pr && pr.prices && Object.values(pr.prices).some(Boolean);
+      $('rcpt-hint').textContent = pr ? `${nm} 様の設定: ${pr.receipt ? '領収書が必要' : '領収書は不要'}${special ? '・この方の単価を使っています' : ''}` : '';
       if (!pr) return;
       $('f-rcpt').value = pr.receipt ? 'yes' : 'no';
       $('f-atena').value = pr.atena || '';
@@ -858,13 +878,15 @@ function viewCustomers() {
   const q = (ui.csearch || '').trim();
   const cv = ui.cvenue || '';
   let list = customerStats(cv);
+  if (!cv) for (const nm of Object.keys(state.customers || {})) if (!list.some(c => c.name === nm))
+    list.push({ name: nm, orders: 0, treats: 0, measures: 0, goods: 0, total: 0, unpaid: 0, last: '', venues: new Set() });
   if (q) list = list.filter(c => c.name.includes(q));
   const sort = ui.csort || 'last';
   list.sort((a, b) => sort === 'unpaid' ? b.unpaid - a.unpaid || (b.last > a.last ? 1 : -1) : sort === 'name' ? a.name.localeCompare(b.name, 'ja') : (b.last > a.last ? 1 : -1));
   const unpaidTotal = list.reduce((s, c) => s + c.unpaid, 0);
   const rows = list.map(c => `<button class="item" data-cust="${esc(c.name)}" style="grid-template-columns:1fr auto">
-      <div><div class="main">${esc(c.name)}${c.unpaid ? ` <span class="badge out">未精算 ${yen(c.unpaid)}</span>` : ''}${profile(c.name) && profile(c.name).receipt ? ' <span class="badge">領収書</span>' : ''}${c.noRcpt ? ` <span class="badge out">領収書 未発行 ${c.noRcpt}</span>` : ''}</div>
-        <div class="sub">最後: ${jdate(c.last)}・注文 ${c.orders} 回・施術 ${c.treats} 回・測定 ${c.measures} 回・商品 ${c.goods} 点${c.venues.size ? '・' + esc([...c.venues].join('、')) : ''}</div></div>
+      <div><div class="main">${esc(c.name)}${c.unpaid ? ` <span class="badge out">未精算 ${yen(c.unpaid)}</span>` : ''}${profile(c.name) && profile(c.name).receipt ? ' <span class="badge">領収書</span>' : ''}${profile(c.name) && profile(c.name).prices && Object.values(profile(c.name).prices).some(Boolean) ? ' <span class="badge">特別単価</span>' : ''}${c.noRcpt ? ` <span class="badge out">領収書 未発行 ${c.noRcpt}</span>` : ''}</div>
+        <div class="sub">${c.orders ? `最後: ${jdate(c.last)}・注文 ${c.orders} 回・施術 ${c.treats} 回・測定 ${c.measures} 回・商品 ${c.goods} 点${c.venues.size ? '・' + esc([...c.venues].join('、')) : ''}` : '登録のみ（まだ注文はありません）'}</div></div>
       <div class="num">${yen(c.total)}</div></button>`).join('');
   return `${peopleTabs('customers')}
   <div class="row2">
@@ -873,6 +895,7 @@ function viewCustomers() {
   </div>
   <div class="seg">${[['last', '最近の順'], ['unpaid', '未精算の多い順'], ['name', '名前の順']].map(([k, l]) => `<button data-csort="${k}" class="${sort === k ? 'on' : ''}">${l}</button>`).join('')}</div>
   ${unpaidTotal ? `<div class="banner">未精算（まだ入金されていない分）の合計: <b>${yen(unpaidTotal)}</b></div>` : ''}
+  <div class="btns" style="margin-bottom:12px"><button class="btn" data-addcust="1">＋ お客様を登録（単価や領収書の設定だけ先に）</button></div>
   <div class="list">${rows || '<div class="empty">まだお客様の記録がありません。「＋ 収入」でお客様の名前を入れると、ここに出ます。</div>'}</div>
   <p class="muted small">「あとで入金（売掛金）」で記録した注文が「未精算」になります。</p>`;
 }
@@ -896,6 +919,14 @@ function viewCustomer() {
     <div class="stat"><div class="label">施術・測定の回数</div><div class="value">施術 ${c.treats} 回・測定 ${c.measures} 回</div></div>
     <div class="stat"><div class="label">注文の回数・合計</div><div class="value">${c.orders} 回・${yen(c.total)}</div></div>
     <div class="stat"><div class="label">精算</div><div class="value ${c.unpaid ? 'out' : ''}">${c.unpaid ? '未精算 ' + yen(c.unpaid) : 'すべて完了'}</div></div>
+  </div>
+
+  <h2>この方の単価</h2>
+  <div class="card">
+    <p class="small" style="margin-top:0">この方だけ単価が違うときに入れます。空のままの商品は、設定の標準の単価になります。</p>
+    <div class="row2">${PRICED_NAMES().map(n => `<div class="field"><label>${esc(n)}</label>
+      <input class="amount" data-cprice="${esc(n)}" inputmode="numeric" placeholder="標準 ${unitPrice(n) ? plain(unitPrice(n)) : '未設定'}" value="${pr.prices && pr.prices[n] ? plain(pr.prices[n]) : ''}"></div>`).join('')}</div>
+    <button class="btn primary" data-pprice="1">この方の単価を保存</button>
   </div>
 
   <h2>領収書</h2>
@@ -1111,10 +1142,23 @@ document.addEventListener('click', e => {
   } else if (t.dataset.cust) { ui.customer = t.dataset.cust; go('customer'); }
   else if (t.dataset.csort) { ui.csort = t.dataset.csort; render(); }
   else if (t.dataset.settle) { settle(t.dataset.settle, t.dataset.to); }
+  else if (t.dataset.pprice) {
+    const prices = {};
+    document.querySelectorAll('[data-cprice]').forEach(inp => { const v = parseAmount(inp.value); if (v) prices[inp.dataset.cprice] = v; });
+    state.customers = state.customers || {};
+    state.customers[ui.customer] = { receipt: false, ...(profile(ui.customer) || {}), prices };
+    save(); render(); toast('この方の単価を保存しました');
+  } else if (t.dataset.addcust) {
+    const nm = (prompt('登録するお客様のお名前を入れてください。') || '').trim();
+    if (!nm) return;
+    state.customers = state.customers || {};
+    if (!state.customers[nm]) state.customers[nm] = { receipt: false };
+    save(); ui.customer = nm; go('customer');
+  }
   else if (t.dataset.psave) {
     const need = document.getElementById('p-rcpt').value === 'yes';
     state.customers = state.customers || {};
-    state.customers[ui.customer] = { receipt: need, atena: document.getElementById('p-atena').value.trim() || ui.customer, tadashi: document.getElementById('p-tadashi').value.trim() || DEFAULT_TADASHI };
+    state.customers[ui.customer] = { ...(profile(ui.customer) || {}), receipt: need, atena: document.getElementById('p-atena').value.trim() || ui.customer, tadashi: document.getElementById('p-tadashi').value.trim() || DEFAULT_TADASHI };
     save(); render(); toast('領収書の設定を保存しました');
   } else if (t.dataset.issue) {
     const en = state.entries.find(x => x.id === t.dataset.issue);
@@ -1138,6 +1182,7 @@ document.addEventListener('change', e => {
   if (e.target.id === 'v-month') { ui.vmonth = +e.target.value; render(); }
 });
 document.addEventListener('input', e => {
+  if (e.target.dataset && e.target.dataset.cprice !== undefined) { const v = parseAmount(e.target.value); e.target.value = v ? plain(v) : ''; return; }
   if (e.target.id === 'search' || e.target.id === 'c-search') {
     const id = e.target.id;
     if (id === 'search') ui.search = e.target.value; else ui.csearch = e.target.value;
