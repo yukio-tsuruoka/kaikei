@@ -3,7 +3,7 @@
    データはこの端末の中（localStorage）にだけ保存し、外へは送らない。 */
 
 const STORE_KEY = 'kaikei.v1';
-const APP_VERSION = '1.7.1';
+const APP_VERSION = '1.8.0';
 
 // ---------- 勘定科目 ----------
 const EXPENSES = [
@@ -236,9 +236,9 @@ function toast(msg) {
 // ---------- 描画 ----------
 function render() {
   const v = document.getElementById('view');
-  const tab = ['customer', 'venues', 'venue'].includes(ui.view) ? 'customers' : ui.view === 'ledger' ? 'list' : ui.view;
+  const tab = ['customer', 'venues', 'venue', 'session'].includes(ui.view) ? 'customers' : ui.view === 'ledger' ? 'list' : ui.view;
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.go === tab));
-  v.innerHTML = ({ home: viewHome, input: viewInput, list: viewList, summary: viewSummary, settings: viewSettings, ledger: viewLedger, customers: viewCustomers, customer: viewCustomer, venues: viewVenues, venue: viewVenue })[ui.view]();
+  v.innerHTML = ({ home: viewHome, input: viewInput, list: viewList, summary: viewSummary, settings: viewSettings, ledger: viewLedger, customers: viewCustomers, customer: viewCustomer, venues: viewVenues, venue: viewVenue, session: viewSession })[ui.view]();
   if (ui.view === 'input') bindInput();
   if (ui.view === 'settings') bindSettings();
 }
@@ -292,6 +292,7 @@ function viewHome() {
     <button class="bigbtn in" data-new="in">＋ 収入</button>
     <button class="bigbtn out" data-new="out">＋ 支出</button>
     <button class="bigbtn" data-new="move">⇄ お金の移動</button>
+    <button class="bigbtn" data-go="session" style="grid-column:1/-1;color:var(--accent)">📋 会場で記録する（名簿・出欠・まとめて記録）</button>
   </div>
   <h2>いまの残高</h2>
   <div class="stats">
@@ -755,7 +756,7 @@ function customerStats(venue) {
 // ---------- 会場 ----------
 function venueNames() { return [...new Set(state.entries.map(e => e.venue).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ja')); }
 function peopleTabs(on) {
-  return `<div class="seg">${[['customers', 'お客様ごと'], ['venues', '会場ごと']].map(([k, l]) =>
+  return `<div class="seg">${[['session', '会場で記録'], ['customers', 'お客様ごと'], ['venues', '会場ごと']].map(([k, l]) =>
     `<button data-go="${k}" class="${on === k ? 'on' : ''}">${l}</button>`).join('')}</div>`;
 }
 function venueStats(ents) { // 会場ごと（会場なしは「共通」）の収入・経費・メンバー
@@ -853,7 +854,7 @@ function viewVenue() {
 
   <h2>この会場の記録（押すと直せます）</h2>
   <div class="list">${sorted(ents).reverse().map(itemHtml).join('') || '<div class="empty">記録はありません。</div>'}</div>
-  ${name ? `<div class="btns" style="margin-top:14px"><button class="btn" data-rename="venue">会場の名前を変える</button></div>` : ''}`;
+  ${name ? `<div class="btns" style="margin-top:14px"><button class="btn primary" data-sessvenue="1">この会場の当日の記録を開く</button><button class="btn" data-rename="venue">会場の名前を変える</button></div>` : ''}`;
 }
 
 // お客様・会場の名前を、すべての記録でまとめて変える
@@ -1024,7 +1025,7 @@ function viewSettings() {
   <div class="card">
     <h2 style="margin-top:0">商品・測定の単価</h2>
     <p class="small">新しい注文の行に、最初から入る単価です。入れておくと、数量を入れるだけで金額が計算されます。</p>
-    <div class="row2">${[...PRODUCT_SIZES, '測定'].map(n => `<div class="field"><label>${esc(n)}</label>
+    <div class="row2">${[...PRODUCT_SIZES, '施術', '測定'].map(n => `<div class="field"><label>${esc(n)}</label>
       <input class="amount" data-price="${esc(n)}" inputmode="numeric" placeholder="0" value="${unitPrice(n) ? plain(unitPrice(n)) : ''}"></div>`).join('')}</div>
     <button class="btn primary" id="pr-save">単価を保存</button>
   </div>
@@ -1040,6 +1041,191 @@ function viewSettings() {
     <p class="small">いまの版: <b>ver ${APP_VERSION}</b>。Wi-Fi につながっているときに押すと、新しい版があれば切り替えます（帳簿の記録は消えません）。</p>
     <button class="btn" id="b-update">新しい版を確認する</button></div>
   <p class="muted small">お店の帳簿 ver ${APP_VERSION}・データはこの端末の中だけに保存され、インターネットには送られません。</p>`;
+}
+
+// ---------- 会場の当日の記録（名簿・出欠・まとめて記録） ----------
+const SESSION_ITEMS = () => [
+  ...PRODUCT_SIZES.map(n => ({ key: n, type: 'goods', name: n })),
+  { key: '施術', type: 'treat', name: '施術' },
+  { key: '測定', type: 'measure', name: '測定' },
+];
+const PAY_CHOICES = [['現金', '現金'], ['普通預金', '銀行'], ['売掛金', 'あとで']];
+function sessKey(venue, date) { return venue + '|' + date; }
+function allVenues() { return [...new Set([...venueNames(), ...Object.keys(state.rosters || {})])].sort((a, b) => a.localeCompare(b, 'ja')); }
+// 名簿 = 登録した人 ＋ 過去にその会場で記録がある人（外した人は除く）
+function roster(venue) {
+  state.rosters = state.rosters || {}; state.rosterOut = state.rosterOut || {};
+  const list = state.rosters[venue] || [];
+  const out = new Set(state.rosterOut[venue] || []);
+  let changed = !state.rosters[venue];
+  for (const e of state.entries) if (e.kind === 'in' && e.venue === venue && e.partner && !list.includes(e.partner) && !out.has(e.partner)) { list.push(e.partner); changed = true; }
+  state.rosters[venue] = list;
+  if (changed) save();
+  return list;
+}
+function sessionData(key) {
+  state.sessions = state.sessions || {};
+  return state.sessions[key] || (state.sessions[key] = { rows: {} });
+}
+function sRow(sess, name) { return sess.rows[name] || (sess.rows[name] = { att: '', qty: {}, none: false, pay: '', rcpt: '', treatment: '' }); }
+function rowItems(name, r) {
+  return SESSION_ITEMS().filter(it => (r.qty[it.key] || 0) > 0).map(it => ({ type: it.type, name: it.name, price: priceFor(name, it.key), qty: r.qty[it.key] }));
+}
+function rowTotal(name, r) { return rowItems(name, r).reduce((s, it) => s + it.price * it.qty, 0); }
+function rowNeedsRcpt(name) { const p = profile(name); return !!(p && p.receipt); }
+function rowSig(r) { return JSON.stringify([r.att, r.qty, r.none, r.pay, r.rcpt, r.treatment]); }
+function rowState(name, r) {
+  // 前に保存した記録が残っているのに、休み・購入なし・出欠未確認に変えた → 保存して取り消す必要がある
+  const stale = r.entryId && state.entries.some(e => e.id === r.entryId) && (r.att !== 'in' || !rowItems(name, r).length);
+  if (stale) return { k: 'unsaved', label: '取り消しが未保存', done: false };
+  if (!r.att) return { k: 'unknown', label: '出欠がまだ', done: false };
+  if (r.att === 'out') return { k: 'out', label: '休み', done: true };
+  const items = rowItems(name, r);
+  if (!items.length) return r.none ? { k: 'ok', label: '購入なし', done: true } : { k: 'empty', label: '来たのに記録なし', done: false };
+  const missing = [];
+  if (!r.pay) missing.push('支払い');
+  if (rowNeedsRcpt(name) && !r.rcpt) missing.push('領収書');
+  if (items.some(it => !it.price)) missing.push('単価');
+  if (missing.length) return { k: 'partial', label: missing.join('・') + 'がまだ', done: false };
+  if (r.savedSig !== rowSig(r)) return { k: 'unsaved', label: '未保存', done: false };
+  return { k: 'ok', label: '保存済み', done: true };
+}
+function lastOrder(name, venue) {
+  const list = sorted(state.entries.filter(e => e.kind === 'in' && e.partner === name && e.session !== sessKey(venue, ui.sess.date)));
+  return list.filter(e => e.venue === venue).pop() || list.pop() || null;
+}
+
+function viewSession() {
+  const venues = allVenues();
+  const s = ui.sess || (ui.sess = { venue: venues[0] || '', date: today(), filter: 'todo', q: '' });
+  const head = `${peopleTabs('session')}
+  <div class="row2">
+    <div class="field"><label>会場</label><select id="s-venue">${options([...venues.map(v => [v, v]), ['__new', '＋ 新しい会場を追加']], s.venue)}</select></div>
+    <div class="field"><label>日付</label><input type="date" id="s-date" value="${esc(s.date)}"></div>
+  </div>`;
+  if (!s.venue) return head + '<div class="card">まだ会場がありません。上の「会場」で「＋ 新しい会場を追加」を選んでください。</div>';
+
+  const key = sessKey(s.venue, s.date);
+  const sess = sessionData(key);
+  const names = [...new Set([...roster(s.venue), ...Object.keys(sess.rows)])].sort((a, b) => a.localeCompare(b, 'ja'));
+  ui.sessNames = names;
+  let done = 0, cash = 0, bank = 0, later = 0, unsaved = 0;
+  const st = {};
+  for (const n of names) {
+    const r = sRow(sess, n); st[n] = rowState(n, r);
+    if (st[n].done) done++;
+    if (st[n].k === 'unsaved') unsaved++;
+    if (r.att === 'in') { const t = rowTotal(n, r); if (r.pay === '現金') cash += t; else if (r.pay === '普通預金') bank += t; else if (r.pay === '売掛金') later += t; }
+  }
+  const q = (s.q || '').trim();
+  const shown = names.map((n, i) => [n, i]).filter(([n]) => (s.filter === 'all' || !st[n].done) && (!q || n.includes(q)));
+
+  const card = ([n, i]) => {
+    const r = sRow(sess, n), stt = st[n], total = rowTotal(n, r), pr = profile(n);
+    const btn = (act, v, label, on, extra = '') => `<button class="sbtn ${on ? 'on' : ''}" data-s="${act}" data-i="${i}" data-v="${esc(v)}" ${extra}>${label}</button>`;
+    let body = '';
+    if (r.att === 'in') {
+      const items = rowItems(n, r);
+      body = `<div class="steps">${SESSION_ITEMS().map(it => {
+        const qn = r.qty[it.key] || 0, price = priceFor(n, it.key);
+        return `<div class="step ${qn ? 'has' : ''}"><div class="stl">${esc(it.name)}<span>${price ? plain(price) + '円' : '単価未設定'}</span></div>
+          <div class="stc">${btn('dec', it.key, '−', false)}<b>${qn}</b>${btn('inc', it.key, '＋', false)}</div></div>`;
+      }).join('')}</div>
+      ${items.length ? '' : `<label class="snone"><input type="checkbox" data-s="none" data-i="${i}" ${r.none ? 'checked' : ''}> 今日は購入なし</label>`}
+      ${items.length ? `<div class="srow"><span class="slab">支払い</span>${PAY_CHOICES.map(([v, l]) => btn('pay', v, l, r.pay === v)).join('')}</div>` : ''}
+      ${items.length && pr && pr.receipt ? `<div class="srow"><span class="slab">領収書</span>${btn('rcpt', 'given', '渡した', r.rcpt === 'given')}${btn('rcpt', 'later', '渡せなかった', r.rcpt === 'later')}
+        <div class="small muted" style="width:100%">宛名: ${esc(pr.atena || n)} 様／但し: ${esc(pr.tadashi || DEFAULT_TADASHI)}</div></div>` : ''}
+      ${r.qty['施術'] ? `<input class="stext" data-stext="treatment" data-i="${i}" placeholder="施術の内容（なくてもOK）" value="${esc(r.treatment)}">` : ''}
+      ${r.fromPrev ? '<div class="small" style="color:var(--in)">前回の内容を入れました。今日の内容と合っているか確かめてください。</div>' : ''}`;
+    }
+    const prev = r.att !== 'out' && !rowItems(n, r).length && lastOrder(n, s.venue);
+    return `<div class="scard st-${stt.k}">
+      <div class="shead"><div class="sname">${esc(n)}${pr && pr.receipt ? ' <span class="badge">領収書</span>' : ''}</div>
+        <span class="sstate">${stt.label}</span>${total ? `<b class="num">${yen(total)}</b>` : ''}</div>
+      <div class="srow">${btn('att', 'in', '来た', r.att === 'in')}${btn('att', 'out', '休み', r.att === 'out')}${prev ? btn('prev', '', '前回と同じ', false) : ''}</div>
+      ${body}</div>`;
+  };
+
+  return `${head}
+  <div class="sbar">
+    <div><b class="${done === names.length ? '' : 'out'}">対応済み ${done} / ${names.length} 人</b>
+      <div class="small">現金 ${yen(cash)}・銀行 ${yen(bank)}・あとで ${yen(later)}</div></div>
+    <button class="btn primary" id="s-save" ${unsaved ? '' : 'disabled'}>保存する${unsaved ? `（${unsaved}人）` : ''}</button>
+  </div>
+  <div class="seg">${[['todo', 'まだの人だけ'], ['all', '全員']].map(([k, l]) => `<button data-sfilter="${k}" class="${s.filter === k ? 'on' : ''}">${l}</button>`).join('')}</div>
+  <div class="field"><input id="s-q" placeholder="お名前で探す" value="${esc(q)}"></div>
+  <div class="sgrid">${shown.map(card).join('') || `<div class="card">${s.filter === 'todo' && !q ? '全員の対応が終わっています。' : '該当する人はいません。'}</div>`}</div>
+  <div class="card" style="margin-top:14px">
+    <h2 style="margin-top:0">名簿にいない人（飛び入り・初めての方）</h2>
+    <div class="row2"><div class="field"><input id="s-add" list="s-allcust" placeholder="お名前" autocomplete="off">
+      <datalist id="s-allcust">${[...new Set([...state.entries.map(e => e.partner).filter(Boolean), ...Object.keys(state.customers || {})])].map(n => `<option value="${esc(n)}">`).join('')}</datalist></div>
+      <div><button class="btn" id="s-addbtn">名簿に追加</button></div></div>
+    <details><summary>名簿の編集（${names.length} 人）</summary>
+      ${names.map((n, i) => `<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-top:1px solid var(--line)"><span>${esc(n)}</span><button class="btn" data-s="remove" data-i="${i}" data-v="">名簿から外す</button></div>`).join('')}
+    </details>
+  </div>`;
+}
+
+function sessionAction(t) {
+  const s = ui.sess, key = sessKey(s.venue, s.date), sess = sessionData(key);
+  const name = ui.sessNames[+t.dataset.i]; if (name === undefined) return;
+  const r = sRow(sess, name), v = t.dataset.v, act = t.dataset.s;
+  if (act === 'att') { r.att = r.att === v ? '' : v; }
+  else if (act === 'inc' || act === 'dec') {
+    r.att = 'in'; r.none = false; r.fromPrev = false;
+    r.qty[v] = Math.max(0, (r.qty[v] || 0) + (act === 'inc' ? 1 : -1));
+    if (!r.qty[v]) delete r.qty[v];
+  } else if (act === 'none') { r.none = t.checked; }
+  else if (act === 'pay') { r.pay = r.pay === v ? '' : v; }
+  else if (act === 'rcpt') { r.rcpt = r.rcpt === v ? '' : v; }
+  else if (act === 'prev') {
+    const e = lastOrder(name, s.venue); if (!e) return;
+    r.att = 'in'; r.qty = {}; r.none = false; r.fromPrev = true;
+    for (const it of e.items || []) {
+      const k = it.type === 'treat' ? '施術' : it.type === 'measure' ? '測定' : it.name;
+      if (SESSION_ITEMS().some(x => x.key === k)) r.qty[k] = (r.qty[k] || 0) + it.qty;
+    }
+    if (['現金', '普通預金', '売掛金'].includes(e.dr)) r.pay = e.dr;
+  } else if (act === 'remove') {
+    if (!confirm(`${name} 様を「${s.venue}」の名簿から外しますか？（これまでの記録は消えません）`)) return;
+    state.rosters[s.venue] = (state.rosters[s.venue] || []).filter(n => n !== name);
+    state.rosterOut[s.venue] = [...new Set([...(state.rosterOut[s.venue] || []), name])];
+    if (!r.att) delete sess.rows[name];
+  }
+  save();
+  const y = window.scrollY; render(); window.scrollTo(0, y);
+}
+
+// まとめて保存：1人1件の収入として帳簿に入れる。同じ日・会場・人はいつも同じ1件を上書きする
+function saveSession() {
+  const s = ui.sess, key = sessKey(s.venue, s.date), sess = sessionData(key);
+  let added = 0, updated = 0, removed = 0; const skipped = [];
+  for (const name of ui.sessNames) {
+    const r = sRow(sess, name), stt = rowState(name, r);
+    let entry = (r.entryId && state.entries.find(e => e.id === r.entryId)) || state.entries.find(e => e.session === key && e.partner === name);
+    const items = rowItems(name, r);
+    if (r.att !== 'in' || !items.length) { // 休み・購入なしになった人の、前に保存した記録を消す
+      if (entry && !entry.settledBy) { state.entries = state.entries.filter(e => e !== entry); removed++; }
+      delete r.entryId;
+      if (stt.done) r.savedSig = rowSig(r);
+      continue;
+    }
+    if (stt.k !== 'unsaved' && stt.k !== 'ok') { skipped.push(`${name}（${stt.label}）`); continue; }
+    if (entry && entry.settledBy) { skipped.push(`${name}（入金済みのため変更できません）`); continue; }
+    const pr = profile(name);
+    const rec = {
+      date: s.date, kind: 'in', dr: r.pay, cr: '売上高', amount: rowTotal(name, r), partner: name, memo: '', venue: s.venue,
+      orderDate: s.date, items, treatment: r.qty['施術'] ? r.treatment : '', session: key,
+      receipt: pr && pr.receipt ? { atena: pr.atena || name, tadashi: pr.tadashi || DEFAULT_TADASHI, issued: r.rcpt === 'given', issuedDate: r.rcpt === 'given' ? s.date : '', reason: r.rcpt === 'later' ? '領収書切れ' : '' } : null,
+    };
+    if (entry) { Object.assign(entry, rec, { updated: Date.now() }); updated++; }
+    else { entry = Object.assign({ id: newId(), created: Date.now() }, rec); state.entries.push(entry); added++; }
+    r.entryId = entry.id; r.savedSig = rowSig(r); r.fromPrev = false;
+  }
+  if (!save()) return;
+  render();
+  toast(`保存しました（新しく ${added} 件・直した ${updated} 件${removed ? `・取り消し ${removed} 件` : ''}）`);
+  if (skipped.length) alert('次の方はまだ保存していません:\n' + skipped.join('\n'));
 }
 
 // ---------- 設定画面の動作 ----------
@@ -1143,6 +1329,17 @@ document.addEventListener('click', e => {
   } else if (t.dataset.cust) { ui.customer = t.dataset.cust; go('customer'); }
   else if (t.dataset.csort) { ui.csort = t.dataset.csort; render(); }
   else if (t.dataset.settle) { settle(t.dataset.settle, t.dataset.to); }
+  else if (t.dataset.s) { sessionAction(t); }
+  else if (t.dataset.sfilter) { ui.sess.filter = t.dataset.sfilter; render(); }
+  else if (t.id === 's-save') { t.disabled = true; saveSession(); }
+  else if (t.id === 's-addbtn') {
+    const nm = document.getElementById('s-add').value.trim(); if (!nm) return;
+    const v = ui.sess.venue; roster(v);
+    if (!state.rosters[v].includes(nm)) state.rosters[v].push(nm);
+    state.rosterOut[v] = (state.rosterOut[v] || []).filter(x => x !== nm);
+    sRow(sessionData(sessKey(v, ui.sess.date)), nm).att = 'in';
+    save(); ui.sess.q = ''; render(); toast(`${nm} 様を名簿に追加しました`);
+  } else if (t.dataset.sessvenue) { ui.sess = Object.assign(ui.sess || { filter: 'todo', q: '' }, { venue: ui.venue, date: today() }); go('session'); }
   else if (t.dataset.pprice) {
     const prices = {};
     document.querySelectorAll('[data-cprice]').forEach(inp => { const v = parseAmount(inp.value); if (v) prices[inp.dataset.cprice] = v; });
@@ -1179,11 +1376,23 @@ document.addEventListener('change', e => {
   if (e.target.id === 'l-year') { ui.year = +e.target.value; render(); }
   if (e.target.id === 'l-acc') { ui.ledgerAcc = e.target.value; render(); }
   if (e.target.id === 'c-venue') { ui.cvenue = e.target.value; render(); }
+  if (e.target.id === 's-venue') {
+    let v = e.target.value;
+    if (v === '__new') { v = (prompt('新しい会場の名前を入れてください。') || '').trim(); if (v) { state.rosters = state.rosters || {}; state.rosters[v] = state.rosters[v] || []; save(); } else v = ui.sess.venue; }
+    ui.sess.venue = v; ui.sess.q = ''; render();
+  }
+  if (e.target.id === 's-date') { ui.sess.date = e.target.value || today(); render(); }
+  if (e.target.dataset && e.target.dataset.s === 'none') sessionAction(e.target);
   if (e.target.id === 'v-year') { ui.year = +e.target.value; render(); }
   if (e.target.id === 'v-month') { ui.vmonth = +e.target.value; render(); }
 });
 document.addEventListener('input', e => {
   if (e.target.dataset && e.target.dataset.cprice !== undefined) { const v = parseAmount(e.target.value); e.target.value = v ? plain(v) : ''; return; }
+  if (e.target.dataset && e.target.dataset.stext) { // 施術の内容：打つたびに保存（画面は描き直さない）
+    const r = sRow(sessionData(sessKey(ui.sess.venue, ui.sess.date)), ui.sessNames[+e.target.dataset.i]);
+    r.treatment = e.target.value; save(); return;
+  }
+  if (e.target.id === 's-q') { ui.sess.q = e.target.value; const pos = e.target.selectionStart; render(); const el = document.getElementById('s-q'); el.focus(); el.setSelectionRange(pos, pos); return; }
   if (e.target.id === 'search' || e.target.id === 'c-search') {
     const id = e.target.id;
     if (id === 'search') ui.search = e.target.value; else ui.csearch = e.target.value;
