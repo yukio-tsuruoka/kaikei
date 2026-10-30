@@ -3,7 +3,7 @@
    データはこの端末の中（localStorage）にだけ保存し、外へは送らない。 */
 
 const STORE_KEY = 'kaikei.v1';
-const APP_VERSION = '1.4.0';
+const APP_VERSION = '1.4.1';
 
 // ---------- 勘定科目 ----------
 const EXPENSES = [
@@ -169,13 +169,13 @@ function freshForm(kind) {
     date: (prev && prev.date) || today(),
     acc: '', method: '', preset: '', dr: '', cr: '',
     amount: '', partner: '', memo: '', editId: null, venue: (prev && prev.venue) || '',
-    orderDate: '', items: [blankItem()], treatment: '',
+    orderDate: '', items: defaultItems(), treatment: '',
   };
 }
 function itemsTotal(items) { return (items || []).reduce((s, it) => s + parseAmount(it.price) * (parseAmount(it.qty) || 0), 0); }
 function cleanItems(items) {
   return (items || []).map(it => ({ type: ITEM_TYPES.some(t => t[0] === it.type) ? it.type : 'goods', name: String(it.name || '').trim(), price: parseAmount(it.price), qty: parseAmount(it.qty) || 0 }))
-    .filter(it => it.name || it.price);
+    .filter(it => it.qty > 0 && (it.name || it.price));
 }
 function itemsText(items) { return (items || []).map(it => `${it.name || '（品名なし）'}×${it.qty}`).join('、'); }
 function knownItems() { // 品名 → 最後に使った単価と種類
@@ -185,7 +185,13 @@ function knownItems() { // 品名 → 最後に使った単価と種類
 }
 const ITEM_TYPES = [['goods', '商品'], ['treat', '施術'], ['measure', '測定']];
 const DEFAULT_PRICE = { measure: 3000 }; // 種類を選んだとき単価が空なら入れる金額
-const blankItem = () => ({ type: 'goods', name: '', price: '', qty: '1' });
+const blankItem = () => ({ type: 'goods', name: '', price: '', qty: '' });
+// 新しい注文の最初の行：商品・施術・測定を1行ずつ（数量を入れた行だけが保存される）
+const defaultItems = () => [
+  { type: 'goods', name: '', price: '', qty: '' },
+  { type: 'treat', name: '', price: '', qty: '' },
+  { type: 'measure', name: '測定', price: String(DEFAULT_PRICE.measure), qty: '' },
+];
 // 掛け売り（売掛金）で、まだ入金を記録していない注文
 function isUnpaid(e) { return e.kind === 'in' && e.dr === '売掛金' && !e.settledBy; }
 
@@ -308,14 +314,14 @@ function viewInput() {
           <div class="field"><label>注文を受けた日</label><input type="date" id="f-order" value="${esc(f.orderDate)}"></div>
           <div class="field"><label>お客様（誰からの注文）</label><input id="f-partner" list="partners" value="${esc(f.partner)}" autocomplete="off"></div>
         </div>
-        <label class="muted small">注文の内容（単価×数量の合計が金額に入ります）</label>
+        <label class="muted small">注文の内容（使う行に数量を入れてください。数量が空の行は保存されません。単価×数量の合計が金額に入ります）</label>
         <div class="tablewrap"><table id="items">
           <tr><th style="width:96px">種類</th><th>品名・施術名</th><th class="right" style="width:19%">単価</th><th class="right" style="width:12%">数量</th><th class="right" style="width:15%">小計</th><th style="width:44px"></th></tr>
           ${f.items.map((it, i) => `<tr data-row="${i}">
             <td><select data-it="type">${options(ITEM_TYPES, it.type || 'goods')}</select></td>
             <td><input data-it="name" list="itemnames" value="${esc(it.name)}" autocomplete="off"></td>
             <td><input data-it="price" class="num" inputmode="numeric" value="${it.price ? plain(parseAmount(it.price)) : ''}"></td>
-            <td><input data-it="qty" class="num" inputmode="numeric" value="${esc(it.qty)}"></td>
+            <td><input data-it="qty" class="num" inputmode="numeric" placeholder="0" value="${esc(it.qty)}"></td>
             <td class="num" data-sub>${plain(parseAmount(it.price) * (parseAmount(it.qty) || 0))}</td>
             <td><button class="btn" data-delrow="${i}" style="min-height:40px;padding:4px 10px">✕</button></td></tr>`).join('')}
         </table></div>
@@ -402,6 +408,10 @@ function bindInput() {
       const k = e.target.dataset.it;
       if (k === 'type') return;
       if (k === 'price' || k === 'qty') { const v = parseAmount(e.target.value); e.target.value = v ? (k === 'price' ? plain(v) : String(v)) : ''; }
+      if ((k === 'name' || k === 'price') && e.target.value) { // 品名か単価を入れたら、数量が空なら1にする
+        const qty = e.target.closest('tr').querySelector('[data-it=qty]');
+        if (!qty.value) qty.value = '1';
+      }
       if (k === 'name' && known.has(e.target.value)) {
         const tr = e.target.closest('tr'), kn = known.get(e.target.value);
         const price = tr.querySelector('[data-it=price]');
@@ -413,7 +423,7 @@ function bindInput() {
     $('f-addrow').onclick = () => { sync(); f.items.push(blankItem()); render(); };
     document.querySelectorAll('[data-delrow]').forEach(b => b.onclick = () => {
       sync(); f.items.splice(+b.dataset.delrow, 1);
-      if (!f.items.length) f.items.push(blankItem());
+      if (!f.items.length) f.items = defaultItems();
       render();
     });
   }
@@ -982,7 +992,7 @@ document.addEventListener('click', e => {
     ui.form = { kind: en.kind, date: en.date, amount: String(en.amount), partner: en.partner || '', memo: en.memo || '', editId: en.id,
       acc: en.kind === 'in' ? en.cr : en.dr, method: en.kind === 'in' ? en.dr : en.cr, preset: en.preset || '', dr: en.dr, cr: en.cr,
       orderDate: en.orderDate || '', treatment: en.treatment || '', venue: en.venue || '',
-      items: en.items && en.items.length ? en.items.map(it => ({ type: it.type || 'goods', name: it.name, price: String(it.price), qty: String(it.qty) })) : [blankItem()] };
+      items: en.items && en.items.length ? en.items.map(it => ({ type: it.type || 'goods', name: it.name, price: String(it.price), qty: String(it.qty) })) : defaultItems() };
     go('input');
   } else if (t.dataset.cust) { ui.customer = t.dataset.cust; go('customer'); }
   else if (t.dataset.csort) { ui.csort = t.dataset.csort; render(); }
