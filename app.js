@@ -3,7 +3,7 @@
    データはこの端末の中（localStorage）にだけ保存し、外へは送らない。 */
 
 const STORE_KEY = 'kaikei.v1';
-const APP_VERSION = '1.7.0';
+const APP_VERSION = '1.7.1';
 
 // ---------- 勘定科目 ----------
 const EXPENSES = [
@@ -200,8 +200,9 @@ function unitPrice(name) {
   return name === '測定' ? DEFAULT_PRICE.measure : 0;
 }
 const PRICED_NAMES = () => [...PRODUCT_SIZES, '測定'];
-// お客様ごとの単価があればそれ、なければ設定の標準の単価
+// お客様ごとの単価（商品だけ）があればそれ、なければ設定の標準の単価。測定・施術はお客様によって変わらない
 function priceFor(customer, name) {
+  if (!PRODUCT_SIZES.includes(name)) return unitPrice(name);
   const pr = profile(customer);
   const v = pr && pr.prices ? pr.prices[name] : 0;
   return v || unitPrice(name);
@@ -510,7 +511,7 @@ function bindInput() {
         });
         f.pricedFor = nm; refreshTotal();
       }
-      const special = pr && pr.prices && Object.values(pr.prices).some(Boolean);
+      const special = pr && pr.prices && PRODUCT_SIZES.some(n => pr.prices[n]);
       $('rcpt-hint').textContent = pr ? `${nm} 様の設定: ${pr.receipt ? '領収書が必要' : '領収書は不要'}${special ? '・この方の単価を使っています' : ''}` : '';
       if (!pr) return;
       $('f-rcpt').value = pr.receipt ? 'yes' : 'no';
@@ -885,7 +886,7 @@ function viewCustomers() {
   list.sort((a, b) => sort === 'unpaid' ? b.unpaid - a.unpaid || (b.last > a.last ? 1 : -1) : sort === 'name' ? a.name.localeCompare(b.name, 'ja') : (b.last > a.last ? 1 : -1));
   const unpaidTotal = list.reduce((s, c) => s + c.unpaid, 0);
   const rows = list.map(c => `<button class="item" data-cust="${esc(c.name)}" style="grid-template-columns:1fr auto">
-      <div><div class="main">${esc(c.name)}${c.unpaid ? ` <span class="badge out">未精算 ${yen(c.unpaid)}</span>` : ''}${profile(c.name) && profile(c.name).receipt ? ' <span class="badge">領収書</span>' : ''}${profile(c.name) && profile(c.name).prices && Object.values(profile(c.name).prices).some(Boolean) ? ' <span class="badge">特別単価</span>' : ''}${c.noRcpt ? ` <span class="badge out">領収書 未発行 ${c.noRcpt}</span>` : ''}</div>
+      <div><div class="main">${esc(c.name)}${c.unpaid ? ` <span class="badge out">未精算 ${yen(c.unpaid)}</span>` : ''}${profile(c.name) && profile(c.name).receipt ? ' <span class="badge">領収書</span>' : ''}${profile(c.name) && profile(c.name).prices && PRODUCT_SIZES.some(n => profile(c.name).prices[n]) ? ' <span class="badge">特別単価</span>' : ''}${c.noRcpt ? ` <span class="badge out">領収書 未発行 ${c.noRcpt}</span>` : ''}</div>
         <div class="sub">${c.orders ? `最後: ${jdate(c.last)}・注文 ${c.orders} 回・施術 ${c.treats} 回・測定 ${c.measures} 回・商品 ${c.goods} 点${c.venues.size ? '・' + esc([...c.venues].join('、')) : ''}` : '登録のみ（まだ注文はありません）'}</div></div>
       <div class="num">${yen(c.total)}</div></button>`).join('');
   return `${peopleTabs('customers')}
@@ -923,8 +924,8 @@ function viewCustomer() {
 
   <h2>この方の単価</h2>
   <div class="card">
-    <p class="small" style="margin-top:0">この方だけ単価が違うときに入れます。空のままの商品は、設定の標準の単価になります。</p>
-    <div class="row2">${PRICED_NAMES().map(n => `<div class="field"><label>${esc(n)}</label>
+    <p class="small" style="margin-top:0">この方だけ商品の単価が違うときに入れます。空のままの商品は、設定の標準の単価になります（測定・施術はどの方も同じ値段です）。</p>
+    <div class="row2">${PRODUCT_SIZES.map(n => `<div class="field"><label>${esc(n)}</label>
       <input class="amount" data-cprice="${esc(n)}" inputmode="numeric" placeholder="標準 ${unitPrice(n) ? plain(unitPrice(n)) : '未設定'}" value="${pr.prices && pr.prices[n] ? plain(pr.prices[n]) : ''}"></div>`).join('')}</div>
     <button class="btn primary" data-pprice="1">この方の単価を保存</button>
   </div>
