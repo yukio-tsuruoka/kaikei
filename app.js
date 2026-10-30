@@ -3,7 +3,7 @@
    データはこの端末の中（localStorage）にだけ保存し、外へは送らない。 */
 
 const STORE_KEY = 'kaikei.v1';
-const APP_VERSION = '1.4.1';
+const APP_VERSION = '1.5.0';
 
 // ---------- 勘定科目 ----------
 const EXPENSES = [
@@ -70,7 +70,11 @@ const METHOD_LABEL = Object.fromEntries([...RECV_METHODS, ...PAY_METHODS]);
 
 // ---------- データ ----------
 let state = load();
-function blank() { return { entries: [], years: {}, customExpenses: [], lastBackup: null, seq: 1 }; }
+function blank() { return { entries: [], years: {}, customExpenses: [], customers: {}, lastBackup: null, seq: 1 }; }
+const DEFAULT_TADASHI = 'お品代として';
+// お客様ごとの領収書の設定 { receipt: true/false, atena, tadashi }
+function profile(name) { return (state.customers || {})[name] || null; }
+function needsReceipt(e) { return e.kind === 'in' && e.receipt && !e.receipt.issued; }
 function load() {
   try {
     const s = JSON.parse(localStorage.getItem(STORE_KEY));
@@ -169,6 +173,7 @@ function freshForm(kind) {
     date: (prev && prev.date) || today(),
     acc: '', method: '', preset: '', dr: '', cr: '',
     amount: '', partner: '', memo: '', editId: null, venue: (prev && prev.venue) || '',
+    rcpt: '', atena: '', tadashi: '', issued: false,
     orderDate: '', items: defaultItems(), treatment: '',
   };
 }
@@ -232,7 +237,7 @@ function itemHtml(e) {
   const [, mm, dd] = e.date.split('-');
   return `<button class="item" data-edit="${e.id}">
     <div class="d">${+mm}/${+dd}</div>
-    <div><div class="main"><span class="badge ${t.cls}">${KIND_LABEL[e.kind]}</span>${esc(t.main)}${isUnpaid(e) ? ' <span class="badge out">未精算</span>' : ''}</div>
+    <div><div class="main"><span class="badge ${t.cls}">${KIND_LABEL[e.kind]}</span>${esc(t.main)}${isUnpaid(e) ? ' <span class="badge out">未精算</span>' : ''}${needsReceipt(e) ? ' <span class="badge out">領収書 未発行</span>' : ''}</div>
       <div class="sub">${esc(t.sub)}${extra ? '・' + extra : ''}</div></div>
     <div class="num ${t.cls}">${e.kind === 'out' ? '−' : ''}${yen(e.amount)}</div>
   </button>`;
@@ -251,6 +256,8 @@ function viewHome() {
   }
   const unpaid = state.entries.filter(isUnpaid).reduce((a, e) => a + e.amount, 0);
   if (unpaid) banner += `<div class="banner">まだ入金されていない注文が <b>${yen(unpaid)}</b> あります。「お客様」で確認できます。</div>`;
+  const noRcpt = state.entries.filter(needsReceipt).length;
+  if (noRcpt) banner += `<div class="banner">まだ渡していない領収書が <b>${noRcpt} 件</b> あります。「お客様」で確認できます。</div>`;
   return `${banner}
   <h2>${m}月の状況</h2>
   <div class="stats">
@@ -291,6 +298,10 @@ function frequent(kind) {
 
 function viewInput() {
   const f = ui.form;
+  if (f.kind === 'in' && !f.editId && !f.rcpt && profile(f.partner)) { // お客様が決まっていれば、その人の領収書の設定を入れておく
+    const pr = profile(f.partner);
+    Object.assign(f, { rcpt: pr.receipt ? 'yes' : 'no', atena: pr.atena || '', tadashi: pr.tadashi || '' });
+  }
   const kinds = [['out', '支出'], ['in', '収入'], ['move', 'お金の移動'], ['journal', '振替（上級）']];
   let body = '';
   const partners = [...new Set(state.entries.map(e => e.partner).filter(Boolean))];
@@ -313,6 +324,18 @@ function viewInput() {
         <div class="row2">
           <div class="field"><label>注文を受けた日</label><input type="date" id="f-order" value="${esc(f.orderDate)}"></div>
           <div class="field"><label>お客様（誰からの注文）</label><input id="f-partner" list="partners" value="${esc(f.partner)}" autocomplete="off"></div>
+        </div>
+        <div class="card" style="padding:12px 14px">
+          <div class="field" style="margin-bottom:8px"><label>領収書</label>
+            <select id="f-rcpt">${options([['no', '不要'], ['yes', '必要']], f.rcpt || 'no')}</select>
+            <div class="hint" id="rcpt-hint">${f.partner && profile(f.partner) ? `${esc(f.partner)} 様の設定: ${profile(f.partner).receipt ? '領収書が必要' : '領収書は不要'}` : ''}</div></div>
+          <div id="rcpt-box" ${f.rcpt === 'yes' ? '' : 'hidden'}>
+            <div class="row2">
+              <div class="field"><label>宛名</label><input id="f-atena" value="${esc(f.atena)}" autocomplete="off" placeholder="例: 株式会社〇〇 / 山田花子"></div>
+              <div class="field"><label>但し書き</label><input id="f-tadashi" value="${esc(f.tadashi || DEFAULT_TADASHI)}" autocomplete="off"></div>
+            </div>
+            <label style="display:flex;gap:10px;align-items:center"><input type="checkbox" id="f-issued" style="width:24px;min-height:24px" ${f.issued ? 'checked' : ''}> 領収書を渡した（発行済み）</label>
+          </div>
         </div>
         <label class="muted small">注文の内容（使う行に数量を入れてください。数量が空の行は保存されません。単価×数量の合計が金額に入ります）</label>
         <div class="tablewrap"><table id="items">
@@ -380,6 +403,10 @@ function bindInput() {
     if ($('f-order')) {
       f.orderDate = $('f-order').value;
       f.treatment = $('f-treat').value.trim();
+      f.rcpt = $('f-rcpt').value;
+      f.atena = $('f-atena').value.trim();
+      f.tadashi = $('f-tadashi').value.trim();
+      f.issued = $('f-issued').checked;
       f.items = [...document.querySelectorAll('[data-row]')].map(tr => ({
         type: tr.querySelector('[data-it=type]').value, name: tr.querySelector('[data-it=name]').value, price: tr.querySelector('[data-it=price]').value, qty: tr.querySelector('[data-it=qty]').value,
       }));
@@ -441,6 +468,22 @@ function bindInput() {
     render();
     document.getElementById('f-amount').focus();
   });
+  if ($('f-rcpt')) {
+    const applyProfile = () => { // お客様の名前が入ったら、その人の領収書の設定を入れる
+      const nm = $('f-partner').value.trim(), pr = profile(nm);
+      $('rcpt-hint').textContent = pr ? `${nm} 様の設定: ${pr.receipt ? '領収書が必要' : '領収書は不要'}` : '';
+      if (!pr) return;
+      $('f-rcpt').value = pr.receipt ? 'yes' : 'no';
+      $('f-atena').value = pr.atena || '';
+      $('f-tadashi').value = pr.tadashi || DEFAULT_TADASHI;
+      $('rcpt-box').hidden = !pr.receipt;
+    };
+    $('f-partner').addEventListener('change', applyProfile);
+    $('f-rcpt').onchange = () => {
+      $('rcpt-box').hidden = $('f-rcpt').value !== 'yes';
+      if ($('f-rcpt').value === 'yes' && !$('f-atena').value) $('f-atena').value = $('f-partner').value.trim();
+    };
+  }
   $('f-save').onclick = () => {
     sync();
     const amount = parseAmount(f.amount);
@@ -457,7 +500,14 @@ function bindInput() {
       const items = cleanItems(f.items);
       const t = itemsTotal(items);
       if (t && t !== amount && !confirm(`注文の内容の合計（${yen(t)}）と金額（${yen(amount)}）が違います。このまま保存しますか？`)) return;
-      Object.assign(rec, { orderDate: f.orderDate, items, treatment: f.treatment });
+      const receipt = f.rcpt === 'yes' ? { atena: f.atena || f.partner, tadashi: f.tadashi || DEFAULT_TADASHI, issued: f.issued } : null;
+      if (receipt && !receipt.atena) return alert('領収書の宛名を入れてください。');
+      Object.assign(rec, { orderDate: f.orderDate, items, treatment: f.treatment, receipt });
+      // 初めてのお客様なら、今回の領収書の選び方をその人の設定として覚える
+      if (f.partner && !profile(f.partner)) {
+        state.customers = state.customers || {};
+        state.customers[f.partner] = receipt ? { receipt: true, atena: receipt.atena, tadashi: receipt.tadashi } : { receipt: false };
+      }
     }
     if (f.editId) {
       const i = state.entries.findIndex(e => e.id === f.editId);
@@ -491,7 +541,7 @@ function bindInput() {
 function viewList() {
   const { y, m } = ui.ym;
   const q = ui.search.trim();
-  let list = q ? state.entries.filter(e => [e.dr, e.cr, e.partner, e.memo, String(e.amount), itemsText(e.items), e.treatment, e.venue].join(' ').includes(q)) : inMonth(y, m);
+  let list = q ? state.entries.filter(e => [e.dr, e.cr, e.partner, e.memo, String(e.amount), itemsText(e.items), e.treatment, e.venue, e.receipt ? e.receipt.atena : ''].join(' ').includes(q)) : inMonth(y, m);
   list = sorted(list).reverse();
   const pl = profitLoss(list);
   return `<h2>帳簿</h2>
@@ -648,6 +698,7 @@ function customerStats(venue) {
     c.total += e.amount;
     for (const it of e.items || []) { if (it.type === 'treat') c.treats += it.qty; else if (it.type === 'measure') c.measures += it.qty; else c.goods += it.qty; }
     if (isUnpaid(e)) c.unpaid += e.amount;
+    if (needsReceipt(e)) c.noRcpt = (c.noRcpt || 0) + 1;
     const d = e.orderDate || e.date; if (d > c.last) c.last = d;
     m.set(e.partner, c);
   }
@@ -765,6 +816,10 @@ function renameAll(kind, from) {
   const field = kind === 'venue' ? 'venue' : 'partner';
   let n = 0;
   for (const e of state.entries) if (e[field] === from) { e[field] = to; n++; }
+  if (kind !== 'venue' && state.customers && state.customers[from]) {
+    if (!state.customers[to]) state.customers[to] = state.customers[from];
+    delete state.customers[from];
+  }
   save();
   if (kind === 'venue') ui.venue = to; else ui.customer = to;
   render(); toast(`${n} 件の記録を「${to}」に変えました`);
@@ -781,7 +836,7 @@ function viewCustomers() {
   list.sort((a, b) => sort === 'unpaid' ? b.unpaid - a.unpaid || (b.last > a.last ? 1 : -1) : sort === 'name' ? a.name.localeCompare(b.name, 'ja') : (b.last > a.last ? 1 : -1));
   const unpaidTotal = list.reduce((s, c) => s + c.unpaid, 0);
   const rows = list.map(c => `<button class="item" data-cust="${esc(c.name)}" style="grid-template-columns:1fr auto">
-      <div><div class="main">${esc(c.name)}${c.unpaid ? ` <span class="badge out">未精算 ${yen(c.unpaid)}</span>` : ''}</div>
+      <div><div class="main">${esc(c.name)}${c.unpaid ? ` <span class="badge out">未精算 ${yen(c.unpaid)}</span>` : ''}${profile(c.name) && profile(c.name).receipt ? ' <span class="badge">領収書</span>' : ''}${c.noRcpt ? ` <span class="badge out">領収書 未発行 ${c.noRcpt}</span>` : ''}</div>
         <div class="sub">最後: ${jdate(c.last)}・注文 ${c.orders} 回・施術 ${c.treats} 回・測定 ${c.measures} 回・商品 ${c.goods} 点${c.venues.size ? '・' + esc([...c.venues].join('、')) : ''}</div></div>
       <div class="num">${yen(c.total)}</div></button>`).join('');
   return `${peopleTabs('customers')}
@@ -806,12 +861,29 @@ function viewCustomer() {
     else { const g = goods.get(it.name) || { qty: 0, amount: 0, last: '' }; g.qty += it.qty; g.amount += it.price * it.qty; const d = e.orderDate || e.date; if (d > g.last) g.last = d; goods.set(it.name, g); }
   }
   const unpaid = ents.filter(isUnpaid);
+  const pr = profile(name) || { receipt: false };
+  const noRcpt = ents.filter(needsReceipt);
   return `<button class="btn" data-go="customers">◀ お客様の一覧</button>
   <h2>${esc(name)}</h2>
   <div class="stats">
     <div class="stat"><div class="label">施術・測定の回数</div><div class="value">施術 ${c.treats} 回・測定 ${c.measures} 回</div></div>
     <div class="stat"><div class="label">注文の回数・合計</div><div class="value">${c.orders} 回・${yen(c.total)}</div></div>
     <div class="stat"><div class="label">精算</div><div class="value ${c.unpaid ? 'out' : ''}">${c.unpaid ? '未精算 ' + yen(c.unpaid) : 'すべて完了'}</div></div>
+  </div>
+
+  <h2>領収書</h2>
+  <div class="card">
+    <div class="row2">
+      <div class="field"><label>この方の領収書</label><select id="p-rcpt">${options([['no', '不要'], ['yes', '必要']], pr.receipt ? 'yes' : 'no')}</select></div>
+      <div class="field"><label>宛名</label><input id="p-atena" value="${esc(pr.atena || name)}" autocomplete="off"></div>
+    </div>
+    <div class="field"><label>但し書き</label><input id="p-tadashi" value="${esc(pr.tadashi || DEFAULT_TADASHI)}" autocomplete="off"></div>
+    <button class="btn primary" data-psave="1">この設定を保存</button>
+    <p class="muted small" style="margin-bottom:0">ここで保存した設定が、次からこの方の収入を記録するときに自動で入ります。</p>
+    ${noRcpt.length ? `<h2>まだ渡していない領収書（${noRcpt.length} 件）</h2>
+    ${noRcpt.map(e => `<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:8px 0;border-top:1px solid var(--line)">
+      <div style="flex:1;min-width:220px">${jdate(e.orderDate || e.date)}・<b>${yen(e.amount)}</b><div class="small">宛名: ${esc(e.receipt.atena)} 様／但し: ${esc(e.receipt.tadashi)}</div></div>
+      <button class="btn primary" data-issue="${e.id}">渡した（発行済み）</button></div>`).join('')}` : ''}
   </div>
 
   ${unpaid.length ? `<h2>まだ入金されていない注文</h2>
@@ -942,10 +1014,10 @@ function bindSettings() {
     e.target.value = '';
   };
   $('b-csv').onclick = () => {
-    const head = ['日付', '借方科目', '借方金額', '貸方科目', '貸方金額', '取引先', '摘要', '種類', '注文日', '注文の内容', '施術の内容', '会場'];
+    const head = ['日付', '借方科目', '借方金額', '貸方科目', '貸方金額', '取引先', '摘要', '種類', '注文日', '注文の内容', '施術の内容', '会場', '領収書', '宛名', '但し書き', '領収書発行'];
     const q = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
     const lines = sorted(state.entries).map(e => [e.date.replace(/-/g, '/'), e.dr, e.amount, e.cr, e.amount, e.partner, e.memo, KIND_LABEL[e.kind],
-      (e.orderDate || '').replace(/-/g, '/'), (e.items || []).map(it => `${it.name} ${it.price}円×${it.qty}`).join(' / '), e.treatment, e.venue].map(q).join(','));
+      (e.orderDate || '').replace(/-/g, '/'), (e.items || []).map(it => `${it.name} ${it.price}円×${it.qty}`).join(' / '), e.treatment, e.venue, e.receipt ? '必要' : '', e.receipt ? e.receipt.atena : '', e.receipt ? e.receipt.tadashi : '', e.receipt ? (e.receipt.issued ? '済' : '未') : ''].map(q).join(','));
     download(`仕訳帳_${stamp()}.csv`, '﻿' + [head.map(q).join(','), ...lines].join('\r\n'), 'text/csv');
   };
   $('y-year').onchange = e => { ui.year = +e.target.value; render(); };
@@ -992,11 +1064,21 @@ document.addEventListener('click', e => {
     ui.form = { kind: en.kind, date: en.date, amount: String(en.amount), partner: en.partner || '', memo: en.memo || '', editId: en.id,
       acc: en.kind === 'in' ? en.cr : en.dr, method: en.kind === 'in' ? en.dr : en.cr, preset: en.preset || '', dr: en.dr, cr: en.cr,
       orderDate: en.orderDate || '', treatment: en.treatment || '', venue: en.venue || '',
+      rcpt: en.receipt ? 'yes' : 'no', atena: en.receipt ? en.receipt.atena : '', tadashi: en.receipt ? en.receipt.tadashi : '', issued: !!(en.receipt && en.receipt.issued),
       items: en.items && en.items.length ? en.items.map(it => ({ type: it.type || 'goods', name: it.name, price: String(it.price), qty: String(it.qty) })) : defaultItems() };
     go('input');
   } else if (t.dataset.cust) { ui.customer = t.dataset.cust; go('customer'); }
   else if (t.dataset.csort) { ui.csort = t.dataset.csort; render(); }
   else if (t.dataset.settle) { settle(t.dataset.settle, t.dataset.to); }
+  else if (t.dataset.psave) {
+    const need = document.getElementById('p-rcpt').value === 'yes';
+    state.customers = state.customers || {};
+    state.customers[ui.customer] = { receipt: need, atena: document.getElementById('p-atena').value.trim() || ui.customer, tadashi: document.getElementById('p-tadashi').value.trim() || DEFAULT_TADASHI };
+    save(); render(); toast('領収書の設定を保存しました');
+  } else if (t.dataset.issue) {
+    const en = state.entries.find(x => x.id === t.dataset.issue);
+    if (en && en.receipt) { en.receipt.issued = true; en.receipt.issuedDate = today(); save(); render(); toast('発行済みにしました'); }
+  }
   else if (t.dataset.venue !== undefined) { ui.venue = t.dataset.venue; go('venue'); }
   else if (t.dataset.rename) { renameAll(t.dataset.rename, t.dataset.rename === 'venue' ? ui.venue : ui.customer); }
   else if (t.dataset.mon) {
