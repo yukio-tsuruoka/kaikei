@@ -3,7 +3,7 @@
    データはこの端末の中（localStorage）にだけ保存し、外へは送らない。 */
 
 const STORE_KEY = 'kaikei.v1';
-const APP_VERSION = '1.2.0';
+const APP_VERSION = '1.3.0';
 
 // ---------- 勘定科目 ----------
 const EXPENSES = [
@@ -168,7 +168,7 @@ function freshForm(kind) {
     kind: kind || (prev && prev.kind) || 'out',
     date: (prev && prev.date) || today(),
     acc: '', method: '', preset: '', dr: '', cr: '',
-    amount: '', partner: '', memo: '', editId: null,
+    amount: '', partner: '', memo: '', editId: null, venue: (prev && prev.venue) || '',
     orderDate: '', items: [blankItem()], treatment: '',
   };
 }
@@ -204,9 +204,9 @@ function toast(msg) {
 // ---------- 描画 ----------
 function render() {
   const v = document.getElementById('view');
-  const tab = ui.view === 'customer' ? 'customers' : ui.view === 'ledger' ? 'list' : ui.view;
+  const tab = ['customer', 'venues', 'venue'].includes(ui.view) ? 'customers' : ui.view === 'ledger' ? 'list' : ui.view;
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.go === tab));
-  v.innerHTML = ({ home: viewHome, input: viewInput, list: viewList, summary: viewSummary, settings: viewSettings, ledger: viewLedger, customers: viewCustomers, customer: viewCustomer })[ui.view]();
+  v.innerHTML = ({ home: viewHome, input: viewInput, list: viewList, summary: viewSummary, settings: viewSettings, ledger: viewLedger, customers: viewCustomers, customer: viewCustomer, venues: viewVenues, venue: viewVenue })[ui.view]();
   if (ui.view === 'input') bindInput();
   if (ui.view === 'settings') bindSettings();
 }
@@ -219,7 +219,7 @@ function entryText(e) {
 }
 function itemHtml(e) {
   const t = entryText(e);
-  const extra = [e.partner, e.items && e.items.length ? itemsText(e.items) : '', e.treatment ? '施術: ' + e.treatment : '', e.memo]
+  const extra = [e.venue ? '［' + e.venue + '］' : '', e.partner, e.items && e.items.length ? itemsText(e.items) : '', e.treatment ? '施術: ' + e.treatment : '', e.memo]
     .filter(Boolean).map(esc).join('・');
   const [, mm, dd] = e.date.split('-');
   return `<button class="item" data-edit="${e.id}">
@@ -342,6 +342,9 @@ function viewInput() {
     </div>
     ${body}
     <datalist id="partners">${partners.map(p => `<option value="${esc(p)}">`).join('')}</datalist>
+    ${f.kind === 'in' || f.kind === 'out' ? `<div class="field"><label>会場（会場ごとの会計に使います。共通の費用は空のままでOK）</label>
+      <input id="f-venue" list="venues" value="${esc(f.venue)}" autocomplete="off" placeholder="例: 〇〇公民館">
+      <datalist id="venues">${venueNames().map(v => `<option value="${esc(v)}">`).join('')}</datalist></div>` : ''}
     <div class="row2">
       ${f.kind === 'in' ? '' : `<div class="field"><label>取引先（なくてもOK）</label><input id="f-partner" list="partners" value="${esc(f.partner)}" autocomplete="off"></div>`}
       <div class="field"><label>メモ（なくてもOK）</label><input id="f-memo" value="${esc(f.memo)}" autocomplete="off"></div>
@@ -361,6 +364,7 @@ function bindInput() {
     f.amount = $('f-amount').value;
     f.partner = $('f-partner').value.trim();
     f.memo = $('f-memo').value.trim();
+    if ($('f-venue')) f.venue = $('f-venue').value.trim();
     if ($('f-acc')) f.acc = $('f-acc').value;
     if ($('f-method')) f.method = $('f-method').value;
     if ($('f-dr')) { f.dr = $('f-dr').value; f.cr = $('f-cr').value; }
@@ -426,7 +430,7 @@ function bindInput() {
     else if (f.kind === 'in') { dr = f.method || '現金'; cr = f.acc || '売上高'; }
     else if (f.kind === 'move') { const p = MOVES.find(x => x.id === f.preset); if (!p) return alert('お金の動きを選んでください。'); dr = p.dr; cr = p.cr; }
     else { if (!f.dr || !f.cr) return alert('借方と貸方の科目を選んでください。'); if (f.dr === f.cr) return alert('借方と貸方は別の科目にしてください。'); dr = f.dr; cr = f.cr; }
-    const rec = { date: f.date, kind: f.kind, dr, cr, amount, partner: f.partner, memo: f.memo };
+    const rec = { date: f.date, kind: f.kind, dr, cr, amount, partner: f.partner, memo: f.memo, venue: (f.kind === 'in' || f.kind === 'out') ? f.venue : '' };
     if (f.kind === 'move') rec.preset = f.preset;
     if (f.kind === 'in') {
       const items = cleanItems(f.items);
@@ -445,7 +449,7 @@ function bindInput() {
       state.entries.push(Object.assign({ id: newId(), created: Date.now() }, rec));
       if (!save()) return;
       toast(`保存しました（${yen(amount)}）`);
-      const keep = { kind: f.kind, date: f.date };
+      const keep = { kind: f.kind, date: f.date, venue: f.venue };
       ui.form = Object.assign(freshForm(keep.kind), keep);
       render();
     }
@@ -466,7 +470,7 @@ function bindInput() {
 function viewList() {
   const { y, m } = ui.ym;
   const q = ui.search.trim();
-  let list = q ? state.entries.filter(e => [e.dr, e.cr, e.partner, e.memo, String(e.amount), itemsText(e.items), e.treatment].join(' ').includes(q)) : inMonth(y, m);
+  let list = q ? state.entries.filter(e => [e.dr, e.cr, e.partner, e.memo, String(e.amount), itemsText(e.items), e.treatment, e.venue].join(' ').includes(q)) : inMonth(y, m);
   list = sorted(list).reverse();
   const pl = profitLoss(list);
   return `<h2>帳簿</h2>
@@ -558,6 +562,7 @@ function viewSummary() {
     <tr class="total"><td>合計</td><td class="num">${plain(yp.revenue)}</td><td class="num">${plain(yp.purchases)}</td><td class="num">${plain(yp.expTotal)}</td><td class="num">${plain(yp.revenue - yp.purchases - yp.expTotal)}</td></tr>
   </table></div>
 
+  ${venueTableHtml(ents)}
   ${itemSalesHtml(ents)}
 
   <h2>損益計算書（青色申告決算書の1ページ目に写す数字）</h2>
@@ -611,11 +616,13 @@ function itemSalesHtml(ents) {
 }
 
 // ---------- お客様 ----------
-function customerStats() {
+function customerStats(venue) {
   const m = new Map();
   for (const e of sorted(state.entries)) {
     if (e.kind !== 'in' || !e.partner) continue;
-    const c = m.get(e.partner) || { name: e.partner, orders: 0, treats: 0, goods: 0, total: 0, unpaid: 0, last: '' };
+    if (venue && e.venue !== venue) continue;
+    const c = m.get(e.partner) || { name: e.partner, orders: 0, treats: 0, goods: 0, total: 0, unpaid: 0, last: '', venues: new Set() };
+    if (e.venue) c.venues.add(e.venue);
     c.orders++;
     c.total += e.amount;
     for (const it of e.items || []) { if (it.type === 'treat') c.treats += it.qty; else c.goods += it.qty; }
@@ -625,21 +632,142 @@ function customerStats() {
   }
   return [...m.values()];
 }
+// ---------- 会場 ----------
+function venueNames() { return [...new Set(state.entries.map(e => e.venue).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ja')); }
+function peopleTabs(on) {
+  return `<div class="seg">${[['customers', 'お客様ごと'], ['venues', '会場ごと']].map(([k, l]) =>
+    `<button data-go="${k}" class="${on === k ? 'on' : ''}">${l}</button>`).join('')}</div>`;
+}
+function venueStats(ents) { // 会場ごと（会場なしは「共通」）の収入・経費・メンバー
+  const m = new Map();
+  for (const e of ents) {
+    if (e.kind !== 'in' && e.kind !== 'out') continue;
+    const k = e.venue || '';
+    const v = m.get(k) || { name: k, revenue: 0, cost: 0, unpaid: 0, members: new Set(), orders: 0, treats: 0, last: '' };
+    if (e.kind === 'in') {
+      v.revenue += e.amount; v.orders++;
+      if (e.partner) v.members.add(e.partner);
+      for (const it of e.items || []) if (it.type === 'treat') v.treats += it.qty;
+      if (isUnpaid(e)) v.unpaid += e.amount;
+    } else v.cost += e.amount;
+    const d = e.orderDate || e.date; if (d > v.last) v.last = d;
+    m.set(k, v);
+  }
+  return [...m.values()].sort((a, b) => (a.name === '') - (b.name === '') || b.revenue - a.revenue);
+}
+function venuePeriod() {
+  const y = ui.year, mo = ui.vmonth || 0;
+  return { y, mo, ents: mo ? inMonth(y, mo) : inYear(y), label: mo ? `${y}年${mo}月` : `${y}年` };
+}
+function periodSelects() {
+  const { y, mo } = venuePeriod();
+  return `<div class="row2">
+    <div class="field"><select id="v-year">${yearOptions(y)}</select></div>
+    <div class="field"><select id="v-month">${options([['0', '1年分'], ...Array.from({ length: 12 }, (_, i) => [String(i + 1), `${i + 1}月`])], String(mo))}</select></div>
+  </div>`;
+}
+function venueTableHtml(ents) {
+  const vs = venueStats(ents);
+  if (!vs.some(v => v.name)) return '';
+  return `<h2>会場ごと</h2>
+  <div class="card tablewrap"><table>
+    <tr><th>会場</th><th class="right">参加人数</th><th class="right">収入</th><th class="right">経費・仕入</th><th class="right">差し引き</th></tr>
+    ${vs.map(v => `<tr><td>${v.name ? esc(v.name) : '<span class="muted">共通（会場なし）</span>'}</td><td class="num">${v.members.size}</td><td class="num">${plain(v.revenue)}</td><td class="num">${plain(v.cost)}</td><td class="num">${plain(v.revenue - v.cost)}</td></tr>`).join('')}
+  </table></div>`;
+}
+
+function viewVenues() {
+  const { ents, label } = venuePeriod();
+  const vs = venueStats(ents);
+  const rows = vs.map(v => `<button class="item" data-venue="${esc(v.name)}" style="grid-template-columns:1fr auto">
+      <div><div class="main">${v.name ? esc(v.name) : '共通（会場なし）'}${v.unpaid ? ` <span class="badge out">未精算 ${yen(v.unpaid)}</span>` : ''}</div>
+        <div class="sub">参加 ${v.members.size} 人・注文 ${v.orders} 回・施術 ${v.treats} 回・経費 ${yen(v.cost)}</div></div>
+      <div class="num">${yen(v.revenue - v.cost)}<div class="muted small">差し引き</div></div></button>`).join('');
+  return `${peopleTabs('venues')}
+  ${periodSelects()}
+  <div class="list">${rows || `<div class="empty">${label}の記録はありません。収入や支出の「会場」に名前を入れると、ここに出ます。</div>`}</div>
+  <p class="muted small">会場を入れなかった収入・支出は「共通（会場なし）」にまとまります。</p>`;
+}
+
+function viewVenue() {
+  const name = ui.venue;
+  const { ents: all, label } = venuePeriod();
+  const ents = all.filter(e => (e.kind === 'in' || e.kind === 'out') && (e.venue || '') === name);
+  const pl = profitLoss(ents);
+  const members = customerStats().length ? (() => {
+    const m = new Map();
+    for (const e of ents) {
+      if (e.kind !== 'in' || !e.partner) continue;
+      const c = m.get(e.partner) || { name: e.partner, orders: 0, treats: 0, goods: 0, total: 0, unpaid: 0, last: '' };
+      c.orders++; c.total += e.amount;
+      for (const it of e.items || []) { if (it.type === 'treat') c.treats += it.qty; else c.goods += it.qty; }
+      if (isUnpaid(e)) c.unpaid += e.amount;
+      const d = e.orderDate || e.date; if (d > c.last) c.last = d;
+      m.set(e.partner, c);
+    }
+    return [...m.values()].sort((a, b) => b.total - a.total);
+  })() : [];
+  const unpaid = members.reduce((s, c) => s + c.unpaid, 0);
+  const expRows = [['仕入', pl.purchases], ...pl.exp].filter(([, v]) => v)
+    .map(([n, v]) => `<tr><td class="indent">${esc(n)}</td><td class="num">${plain(v)}</td></tr>`).join('');
+  return `<button class="btn" data-go="venues">◀ 会場の一覧</button>
+  <h2>${name ? esc(name) : '共通（会場なし）'}　<span class="muted small">${label}</span></h2>
+  ${periodSelects()}
+  <div class="stats">
+    <div class="stat"><div class="label">収入</div><div class="value in">${yen(pl.revenue)}</div></div>
+    <div class="stat"><div class="label">経費・仕入</div><div class="value out">${yen(pl.purchases + pl.expTotal)}</div></div>
+    <div class="stat"><div class="label">差し引き</div><div class="value">${yen(pl.revenue - pl.purchases - pl.expTotal)}</div></div>
+  </div>
+  ${unpaid ? `<div class="banner" style="margin-top:14px">この会場の未精算: <b>${yen(unpaid)}</b>（お名前を押すと精算できます）</div>` : ''}
+
+  <h2>参加メンバー（${members.length} 人）</h2>
+  <div class="card tablewrap"><table>
+    <tr><th>お名前</th><th class="right">注文</th><th class="right">施術</th><th class="right">商品</th><th class="right">金額</th><th class="right">精算</th></tr>
+    ${members.map(c => `<tr><td><button class="btn" data-cust="${esc(c.name)}" style="min-height:36px;padding:4px 10px">${esc(c.name)}</button></td>
+      <td class="num">${c.orders}回</td><td class="num">${c.treats}回</td><td class="num">${c.goods}点</td><td class="num">${plain(c.total)}</td>
+      <td class="num ${c.unpaid ? 'out' : ''}">${c.unpaid ? '未 ' + plain(c.unpaid) : '済'}</td></tr>`).join('') || '<tr><td colspan="6" class="muted">この期間の参加者の記録はありません。</td></tr>'}
+  </table></div>
+
+  <h2>経費・仕入の内訳</h2>
+  <div class="card tablewrap"><table>${expRows || '<tr><td class="muted">この期間の経費はありません。</td></tr>'}</table></div>
+
+  <h2>この会場の記録（押すと直せます）</h2>
+  <div class="list">${sorted(ents).reverse().map(itemHtml).join('') || '<div class="empty">記録はありません。</div>'}</div>
+  ${name ? `<div class="btns" style="margin-top:14px"><button class="btn" data-rename="venue">会場の名前を変える</button></div>` : ''}`;
+}
+
+// お客様・会場の名前を、すべての記録でまとめて変える
+function renameAll(kind, from) {
+  const label = kind === 'venue' ? '会場' : 'お客様';
+  const to = (prompt(`「${from}」の新しい${label}の名前を入れてください。\n（すでにある名前にすると、ひとつにまとまります）`, from) || '').trim();
+  if (!to || to === from) return;
+  const field = kind === 'venue' ? 'venue' : 'partner';
+  let n = 0;
+  for (const e of state.entries) if (e[field] === from) { e[field] = to; n++; }
+  save();
+  if (kind === 'venue') ui.venue = to; else ui.customer = to;
+  render(); toast(`${n} 件の記録を「${to}」に変えました`);
+}
+
 function jdate(d) { if (!d) return ''; const [y, m, dd] = d.split('-'); return `${y}/${+m}/${+dd}`; }
 
 function viewCustomers() {
   const q = (ui.csearch || '').trim();
-  let list = customerStats();
+  const cv = ui.cvenue || '';
+  let list = customerStats(cv);
   if (q) list = list.filter(c => c.name.includes(q));
   const sort = ui.csort || 'last';
   list.sort((a, b) => sort === 'unpaid' ? b.unpaid - a.unpaid || (b.last > a.last ? 1 : -1) : sort === 'name' ? a.name.localeCompare(b.name, 'ja') : (b.last > a.last ? 1 : -1));
   const unpaidTotal = list.reduce((s, c) => s + c.unpaid, 0);
   const rows = list.map(c => `<button class="item" data-cust="${esc(c.name)}" style="grid-template-columns:1fr auto">
       <div><div class="main">${esc(c.name)}${c.unpaid ? ` <span class="badge out">未精算 ${yen(c.unpaid)}</span>` : ''}</div>
-        <div class="sub">最後: ${jdate(c.last)}・注文 ${c.orders} 回・施術 ${c.treats} 回・商品 ${c.goods} 点</div></div>
+        <div class="sub">最後: ${jdate(c.last)}・注文 ${c.orders} 回・施術 ${c.treats} 回・商品 ${c.goods} 点${c.venues.size ? '・' + esc([...c.venues].join('、')) : ''}</div></div>
       <div class="num">${yen(c.total)}</div></button>`).join('');
-  return `<h2>お客様</h2>
-  <div class="field"><input id="c-search" placeholder="お名前で探す" value="${esc(q)}"></div>
+  return `${peopleTabs('customers')}
+  <div class="row2">
+    <div class="field"><input id="c-search" placeholder="お名前で探す" value="${esc(q)}"></div>
+    <div class="field"><select id="c-venue">${options([['', 'すべての会場'], ...venueNames().map(v => [v, v])], cv)}</select></div>
+  </div>
   <div class="seg">${[['last', '最近の順'], ['unpaid', '未精算の多い順'], ['name', '名前の順']].map(([k, l]) => `<button data-csort="${k}" class="${sort === k ? 'on' : ''}">${l}</button>`).join('')}</div>
   ${unpaidTotal ? `<div class="banner">未精算（まだ入金されていない分）の合計: <b>${yen(unpaidTotal)}</b></div>` : ''}
   <div class="list">${rows || '<div class="empty">まだお客様の記録がありません。「＋ 収入」でお客様の名前を入れると、ここに出ます。</div>'}</div>
@@ -684,7 +812,8 @@ function viewCustomer() {
   </table></div>
 
   <h2>すべての注文（押すと直せます）</h2>
-  <div class="list">${ents.map(e => itemHtml(e)).join('') || '<div class="empty">記録はありません。</div>'}</div>`;
+  <div class="list">${ents.map(e => itemHtml(e)).join('') || '<div class="empty">記録はありません。</div>'}</div>
+  <div class="btns" style="margin-top:14px"><button class="btn" data-rename="customer">お名前を変える・ほかの名前とまとめる</button></div>`;
 }
 
 function settle(id, to) {
@@ -781,10 +910,10 @@ function bindSettings() {
     e.target.value = '';
   };
   $('b-csv').onclick = () => {
-    const head = ['日付', '借方科目', '借方金額', '貸方科目', '貸方金額', '取引先', '摘要', '種類', '注文日', '注文の内容', '施術の内容'];
+    const head = ['日付', '借方科目', '借方金額', '貸方科目', '貸方金額', '取引先', '摘要', '種類', '注文日', '注文の内容', '施術の内容', '会場'];
     const q = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
     const lines = sorted(state.entries).map(e => [e.date.replace(/-/g, '/'), e.dr, e.amount, e.cr, e.amount, e.partner, e.memo, KIND_LABEL[e.kind],
-      (e.orderDate || '').replace(/-/g, '/'), (e.items || []).map(it => `${it.name} ${it.price}円×${it.qty}`).join(' / '), e.treatment].map(q).join(','));
+      (e.orderDate || '').replace(/-/g, '/'), (e.items || []).map(it => `${it.name} ${it.price}円×${it.qty}`).join(' / '), e.treatment, e.venue].map(q).join(','));
     download(`仕訳帳_${stamp()}.csv`, '﻿' + [head.map(q).join(','), ...lines].join('\r\n'), 'text/csv');
   };
   $('y-year').onchange = e => { ui.year = +e.target.value; render(); };
@@ -830,12 +959,14 @@ document.addEventListener('click', e => {
     const en = state.entries.find(x => x.id === t.dataset.edit); if (!en) return;
     ui.form = { kind: en.kind, date: en.date, amount: String(en.amount), partner: en.partner || '', memo: en.memo || '', editId: en.id,
       acc: en.kind === 'in' ? en.cr : en.dr, method: en.kind === 'in' ? en.dr : en.cr, preset: en.preset || '', dr: en.dr, cr: en.cr,
-      orderDate: en.orderDate || '', treatment: en.treatment || '',
+      orderDate: en.orderDate || '', treatment: en.treatment || '', venue: en.venue || '',
       items: en.items && en.items.length ? en.items.map(it => ({ type: it.type || 'goods', name: it.name, price: String(it.price), qty: String(it.qty) })) : [blankItem()] };
     go('input');
   } else if (t.dataset.cust) { ui.customer = t.dataset.cust; go('customer'); }
   else if (t.dataset.csort) { ui.csort = t.dataset.csort; render(); }
   else if (t.dataset.settle) { settle(t.dataset.settle, t.dataset.to); }
+  else if (t.dataset.venue !== undefined) { ui.venue = t.dataset.venue; go('venue'); }
+  else if (t.dataset.rename) { renameAll(t.dataset.rename, t.dataset.rename === 'venue' ? ui.venue : ui.customer); }
   else if (t.dataset.mon) {
     ui.search = '';
     let { y, m } = ui.ym; m += +t.dataset.mon;
@@ -847,6 +978,9 @@ document.addEventListener('change', e => {
   if (e.target.id === 's-year') { ui.year = +e.target.value; render(); }
   if (e.target.id === 'l-year') { ui.year = +e.target.value; render(); }
   if (e.target.id === 'l-acc') { ui.ledgerAcc = e.target.value; render(); }
+  if (e.target.id === 'c-venue') { ui.cvenue = e.target.value; render(); }
+  if (e.target.id === 'v-year') { ui.year = +e.target.value; render(); }
+  if (e.target.id === 'v-month') { ui.vmonth = +e.target.value; render(); }
 });
 document.addEventListener('input', e => {
   if (e.target.id === 'search' || e.target.id === 'c-search') {

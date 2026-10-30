@@ -1,6 +1,6 @@
 // オフラインで動かすための仕組み。アプリの画面ファイルだけを iPad に保存する（帳簿のデータは扱わない）。
 // アプリを直したら CACHE の番号を上げる。
-const CACHE = 'kaikei-1.2.0';
+const CACHE = 'kaikei-1.3.0';
 const FILES = ['./', 'index.html', 'app.js', 'style.css', 'manifest.webmanifest', 'icon-180.png', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', e => {
