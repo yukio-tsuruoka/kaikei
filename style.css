@@ -188,3 +188,11 @@ details summary { cursor: pointer; padding: 6px 0; font-weight: 600; }
 .snone { display: flex; gap: 8px; align-items: center; font-size: 15px; margin: 4px 0; }
 .snone input { width: 22px; min-height: 22px; }
 .stext { margin-top: 6px; font-size: 16px; }
+
+/* ---- 数量の −／＋ と、押して選ぶボタン ---- */
+.qstep { display: flex; align-items: center; gap: 4px; }
+.qstep .sbtn { min-width: 40px; min-height: 44px; padding: 0; font-size: 22px; line-height: 1; touch-action: manipulation; }
+.qstep input { min-width: 40px; padding: 8px 4px; text-align: center; }
+.chips.pick { margin-top: 6px; }
+.chip.on { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 700; }
+#items select[data-it=type] { min-width: 84px; padding-left: 8px; padding-right: 4px; }

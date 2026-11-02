@@ -3,7 +3,7 @@
    データはこの端末の中（localStorage）にだけ保存し、外へは送らない。 */
 
 const STORE_KEY = 'kaikei.v1';
-const APP_VERSION = '1.9.0';
+const APP_VERSION = '1.10.0';
 
 // ---------- 勘定科目 ----------
 const EXPENSES = [
@@ -323,6 +323,19 @@ function frequent(kind) {
   return [...c.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8).map(x => JSON.parse(x[0]));
 }
 
+// 押すだけで名前が入るボタン
+function pickChips(kind, names, cur, label) {
+  if (!names.length) return '';
+  return `${label ? `<div class="hint">${label}</div>` : ''}<div class="chips pick">${names.map(n =>
+    `<button type="button" class="chip${n === cur ? ' on' : ''}" data-pick="${kind}" data-v="${esc(n)}">${esc(n)}</button>`).join('')}</div>`;
+}
+function recentCustomers() {
+  const last = new Map();
+  for (const e of state.entries) if (e.kind === 'in' && e.partner) { const d = (e.orderDate || e.date) + (e.created || ''); if (!last.has(e.partner) || d > last.get(e.partner)) last.set(e.partner, d); }
+  for (const n of Object.keys(state.customers || {})) if (!last.has(n)) last.set(n, '');
+  return [...last.entries()].sort((a, b) => b[1].localeCompare(a[1]) || a[0].localeCompare(b[0], 'ja')).slice(0, 12).map(x => x[0]);
+}
+
 function viewInput() {
   const f = ui.form;
   if (f.kind === 'in' && !f.editId && !f.rcpt && profile(f.partner)) { // お客様が決まっていれば、その人の領収書の設定を入れておく
@@ -353,6 +366,7 @@ function viewInput() {
           <div class="field"><label>注文を受けた日</label><input type="date" id="f-order" value="${esc(f.orderDate)}"></div>
           <div class="field"><label>お客様（誰からの注文）</label><input id="f-partner" list="partners" value="${esc(f.partner)}" autocomplete="off"></div>
         </div>
+        ${pickChips('partner', recentCustomers(), f.partner, '最近のお客様（押すと入ります）')}
         <div class="card" style="padding:12px 14px">
           <div class="field" style="margin-bottom:8px"><label>領収書</label>
             <select id="f-rcpt">${options([['no', '不要'], ['yes', '必要']], f.rcpt || 'no')}</select>
@@ -372,14 +386,14 @@ function viewInput() {
             </div>
           </div>
         </div>
-        <label class="muted small">注文の内容（使う行に数量を入れてください。数量が空の行は保存されません。単価×数量の合計が金額に入ります）</label>
+        <label class="muted small">注文の内容（使う行の数量を −／＋ で入れてください。数量が空の行は保存されません。単価×数量の合計が金額に入ります）</label>
         <div class="tablewrap"><table id="items">
-          <tr><th style="width:96px">種類</th><th>品名・施術名</th><th class="right" style="width:19%">単価</th><th class="right" style="width:12%">数量</th><th class="right" style="width:15%">小計</th><th style="width:44px"></th></tr>
+          <tr><th style="width:96px">種類</th><th>品名・施術名</th><th class="right" style="width:19%">単価</th><th class="right" style="width:140px">数量</th><th class="right" style="width:15%">小計</th><th style="width:44px"></th></tr>
           ${f.items.map((it, i) => `<tr data-row="${i}">
             <td><select data-it="type">${options(ITEM_TYPES, it.type || 'goods')}</select></td>
             <td><input data-it="name" list="itemnames" value="${esc(it.name)}" autocomplete="off"></td>
             <td><input data-it="price" class="num" inputmode="numeric" value="${it.price ? plain(parseAmount(it.price)) : ''}"></td>
-            <td><input data-it="qty" class="num" inputmode="numeric" placeholder="0" value="${esc(it.qty)}"></td>
+            <td><div class="qstep"><button type="button" class="sbtn" data-qd="-1" aria-label="1つ減らす">−</button><input data-it="qty" class="num" inputmode="numeric" placeholder="0" value="${esc(it.qty)}"><button type="button" class="sbtn" data-qd="1" aria-label="1つ増やす">＋</button></div></td>
             <td class="num" data-sub>${plain(parseAmount(it.price) * (parseAmount(it.qty) || 0))}</td>
             <td><button class="btn" data-delrow="${i}" style="min-height:40px;padding:4px 10px">✕</button></td></tr>`).join('')}
         </table></div>
@@ -410,7 +424,8 @@ function viewInput() {
     <datalist id="partners">${partners.map(p => `<option value="${esc(p)}">`).join('')}</datalist>
     ${f.kind === 'in' || f.kind === 'out' ? `<div class="field"><label>会場（会場ごとの会計に使います。共通の費用は空のままでOK）</label>
       <input id="f-venue" list="venues" value="${esc(f.venue)}" autocomplete="off" placeholder="例: 〇〇公民館">
-      <datalist id="venues">${venueNames().map(v => `<option value="${esc(v)}">`).join('')}</datalist></div>` : ''}
+      <datalist id="venues">${venueNames().map(v => `<option value="${esc(v)}">`).join('')}</datalist>
+      ${pickChips('venue', venueNames().slice(0, 10), f.venue, '')}</div>` : ''}
     <div class="row2">
       ${f.kind === 'in' ? '' : `<div class="field"><label>取引先（なくてもOK）</label><input id="f-partner" list="partners" value="${esc(f.partner)}" autocomplete="off"></div>`}
       <div class="field"><label>メモ（なくてもOK）</label><input id="f-memo" value="${esc(f.memo)}" autocomplete="off"></div>
@@ -449,7 +464,7 @@ function bindInput() {
       }));
     }
   };
-  const refreshTotal = () => {
+  const refreshTotal = (force) => {
     let total = 0;
     document.querySelectorAll('[data-row]').forEach(tr => {
       const sub = parseAmount(tr.querySelector('[data-it=price]').value) * (parseAmount(tr.querySelector('[data-it=qty]').value) || 0);
@@ -457,6 +472,7 @@ function bindInput() {
       total += sub;
     });
     if (total) $('f-amount').value = plain(total);
+    else if (force) $('f-amount').value = '';
   };
   if ($('items')) {
     const known = knownItems();
@@ -484,6 +500,14 @@ function bindInput() {
       }
       refreshTotal();
     });
+    $('items').addEventListener('click', e => {
+      const b = e.target.closest('[data-qd]');
+      if (!b) return;
+      const q = b.closest('tr').querySelector('[data-it=qty]');
+      const v = Math.max(0, (parseAmount(q.value) || 0) + Number(b.dataset.qd));
+      q.value = v ? String(v) : '';
+      refreshTotal(true);
+    });
     $('f-addrow').onclick = () => { sync(); f.items.push(blankItem()); render(); };
     document.querySelectorAll('[data-delrow]').forEach(b => b.onclick = () => {
       sync(); f.items.splice(+b.dataset.delrow, 1);
@@ -497,6 +521,12 @@ function bindInput() {
     const v = parseAmount(e.target.value);
     e.target.value = v ? plain(v) : '';
   };
+  document.querySelectorAll('[data-pick]').forEach(b => b.onclick = () => {
+    const inp = $(b.dataset.pick === 'partner' ? 'f-partner' : 'f-venue');
+    inp.value = b.dataset.v;
+    inp.dispatchEvent(new Event('change'));
+    b.parentNode.querySelectorAll('.chip').forEach(c => c.classList.toggle('on', c === b));
+  });
   const freq = frequent(f.kind);
   document.querySelectorAll('[data-freq]').forEach(b => b.onclick = () => {
     sync();
