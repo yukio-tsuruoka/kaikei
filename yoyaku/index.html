@@ -35,6 +35,10 @@ input{font:inherit;font-size:18px;color:inherit;background:var(--bg);border:1px 
 .day small{font-size:11px;color:var(--muted);line-height:1.1}
 .day.wed{background:var(--wed)}
 .day.blank{visibility:hidden}
+.day .m{font-size:12px;line-height:1.2;letter-spacing:1px;min-height:15px}
+.m .o{color:var(--acc)}.m .x{color:var(--muted)}
+.slot.busy{background:var(--wed)}
+.slot .bz{font-size:12px;color:var(--warn)}
 .sun{color:#c0392b}.sat{color:#2c6fbb}
 .slots{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
 .slot{min-height:64px;font-size:19px;display:flex;flex-direction:column;align-items:center;justify-content:center}
@@ -74,7 +78,8 @@ input{font:inherit;font-size:18px;color:inherit;background:var(--bg);border:1px 
     <div class="days" id="dows"></div>
     <div class="days" id="days" style="margin-top:4px"></div>
     <div class="row"><button class="link" id="prev" type="button">← 前の4週</button><span style="flex:1"></span><button class="link" id="next" type="button">次の4週 →</button></div>
-    <p class="hint">灰色は水曜（定休日）です。</p>
+    <p class="hint">日にちの下の印：左が午前・右が午後（<b style="color:var(--acc)">◎</b> 空き　― ご予約済み）。灰色は水曜（定休日）です。</p>
+    <p class="hint" id="availMsg"></p>
   </section>
 
   <section>
@@ -89,7 +94,7 @@ input{font:inherit;font-size:18px;color:inherit;background:var(--bg);border:1px 
 </div></div>
 
 <script>
-const VERSION = '1.2.0';
+const VERSION = '1.3.0';
 // お店の予約に直接書き込む Google Apps Script（あなたの Google アカウントの「予約を入れる」）。合言葉がないと書き込めない。
 const GAS_URL = 'https://script.google.com/macros/s/AKfycbzI2iUaIF9MBRKsUdwDSiz8DUm_agwhKy8YFdKLOVymbIJ9Ol4gu43vLYFNjJAPUlz-Eg/exec';
 // 予約は家族のカレンダーに混ぜず、Google カレンダー「お店の予約」に入れる（空き状況の表もここから作る）
@@ -150,6 +155,25 @@ $('newName').oninput = () => { sel.name = $('newName').value.trim(); renderNames
 const ymd = d => `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
 const sameDay = (a, b) => a && b && ymd(a) === ymd(b);
 
+// 空き状況（Google の仕組みから、その場で取ってくる。お名前は来ない）
+let avail = {};
+const dkey = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+async function loadAvail() {
+  if (!token) { $('availMsg').textContent = ''; return; }
+  const start = new Date(); start.setHours(0, 0, 0, 0); start.setDate(start.getDate() + offset * 28);
+  $('availMsg').textContent = '空き状況を確かめています…';
+  try {
+    const res = await call({ action: 'avail', from: dkey(start), days: 28 });
+    if (!res.ok) throw new Error(res.error);
+    Object.assign(avail, res.days);
+    const t = new Date();
+    $('availMsg').textContent = `空き状況は ${t.getHours()}:${String(t.getMinutes()).padStart(2, '0')} の時点です。`;
+    renderDays();
+  } catch (e) {
+    $('availMsg').textContent = 'ネットにつながっていないため、空き状況は出せません。';
+  }
+}
+
 function renderDays() {
   $('dows').innerHTML = [...WD].map((w, i) => `<div class="dow ${i === 0 ? 'sun' : i === 6 ? 'sat' : ''}">${w}</div>`).join('');
   const today = new Date(); today.setHours(0, 0, 0, 0);
@@ -164,23 +188,28 @@ function renderDays() {
     b.className = 'day' + (d.getDay() === 3 ? ' wed' : '') + (sameDay(d, sel.date) ? ' on' : '');
     const top = d.getMonth() !== lastMonth ? `${d.getMonth() + 1}月` : (sameDay(d, today) ? '今日' : '');
     lastMonth = d.getMonth();
-    b.innerHTML = `<small>${top || '&nbsp;'}</small><span class="${d.getDay() === 0 ? 'sun' : d.getDay() === 6 ? 'sat' : ''}">${d.getDate()}</span>`;
+    const a = avail[dkey(d)];
+    const mk = d.getDay() === 3 ? '<span class="x">休</span>' : a ? a.map(x => x ? '<span class="x">―</span>' : '<span class="o">◎</span>').join('') : '&nbsp;';
+    b.innerHTML = `<small>${top || '&nbsp;'}</small><span class="${d.getDay() === 0 ? 'sun' : d.getDay() === 6 ? 'sat' : ''}">${d.getDate()}</span><span class="m">${mk}</span>`;
     b.onclick = () => { sel.date = d; renderDays(); update(); };
     box.appendChild(b);
   }
   const end = new Date(start); end.setDate(start.getDate() + 27);
   $('monthLabel').textContent = `${start.getMonth() + 1}/${start.getDate()}〜${end.getMonth() + 1}/${end.getDate()}`;
   $('prev').style.visibility = offset > 0 ? '' : 'hidden';
+  renderSlots();
 }
-$('prev').onclick = () => { if (offset > 0) { offset--; renderDays(); } };
-$('next').onclick = () => { offset++; renderDays(); };
+$('prev').onclick = () => { if (offset > 0) { offset--; renderDays(); loadAvail(); } };
+$('next').onclick = () => { offset++; renderDays(); loadAvail(); };
 
 function renderSlots() {
   $('slots').innerHTML = '';
   SLOTS.forEach(s => {
     const b = document.createElement('button');
-    b.type = 'button'; b.className = 'slot' + (sel.slot === s.id ? ' on' : '');
-    b.innerHTML = `${s.label}<small>${s.sub}</small>`;
+    const a = sel.date && avail[dkey(sel.date)];
+    const busy = a && (s.id === 'am' ? a[0] : s.id === 'pm' ? a[1] : a[0] || a[1]);
+    b.type = 'button'; b.className = 'slot' + (sel.slot === s.id ? ' on' : '') + (busy ? ' busy' : '');
+    b.innerHTML = `${s.label}<small>${s.sub}</small>${busy ? '<span class="bz">ご予約済み</span>' : ''}`;
     b.onclick = () => { sel.slot = s.id; renderSlots(); update(); };
     $('slots').appendChild(b);
   });
@@ -214,7 +243,7 @@ $('tokenSave').onclick = async () => {
     if (!res.ok) throw new Error(res.error);
     try { localStorage.setItem('yoyaku.token', t); } catch (e) {}
     $('tokenMsg').textContent = ''; $('tokenIn').value = ''; showSetup();
-    showDone('合言葉を覚えました。これで予約を入れられます。');
+    showDone('合言葉を覚えました。これで予約を入れられます。'); loadAvail();
   } catch (e) {
     token = keep;
     $('tokenMsg').textContent = String(e.message) === 'token' ? '合言葉が違うようです。もう一度貼り付けてください。' : 'つながりませんでした。ネットにつながっているか確かめて、もう一度押してください。';
@@ -247,7 +276,7 @@ $('go').onclick = async () => {
       if (confirm(`その時間には、もう「${res.titles.join('」「')}」が入っています。\nそれでも入れますか？`)) res = await call({ ...body, force: true });
       else { showDone(`<b>${esc(text)}</b><br>入れるのをやめました。`); $('go').textContent = 'お店の予約に入れる'; update(); return; }
     }
-    if (res.ok) { showDone(`<b>${esc(text)}</b><br>✓ 「<b>お店の予約</b>」に入れました。<br><span class="hint">空き状況の表には、1時間以内に反映されます。</span>`); reset(); }
+    if (res.ok) { showDone(`<b>${esc(text)}</b><br>✓ 「<b>お店の予約</b>」に入れました。<br><span class="hint">下のカレンダーの印にも、すぐ出ます。</span>`); reset(); loadAvail(); }
     else if (res.error === 'token') { try { localStorage.removeItem('yoyaku.token'); } catch (e) {} token = ''; showSetup(); fallback('合言葉が変わったようです。上の欄に新しい合言葉を入れてください。'); }
     else fallback('うまく入りませんでした。');
   } catch (e) {
@@ -258,6 +287,8 @@ $('go').onclick = async () => {
 
 showSetup();
 renderNames(); renderDays(); renderSlots(); update();
+loadAvail();
+document.addEventListener('visibilitychange', () => { if (!document.hidden) loadAvail(); });
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 </script>
 </body>
