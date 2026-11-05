@@ -3,7 +3,7 @@
    データはこの端末の中（localStorage）にだけ保存し、外へは送らない。 */
 
 const STORE_KEY = 'kaikei.v1';
-const APP_VERSION = '1.11.0';
+const APP_VERSION = '1.12.0';
 
 // ---------- 勘定科目 ----------
 const EXPENSES = [
@@ -313,12 +313,19 @@ function options(list, selected, placeholder) {
   return (placeholder ? `<option value="">${placeholder}</option>` : '') +
     list.map(([v, l]) => `<option value="${esc(v)}"${v === selected ? ' selected' : ''}>${esc(l)}</option>`).join('');
 }
-function frequent(kind) {
+// よく使う記録の会場のタブ: その種類の記録がある会場（多い順）。会場なしは「共通」('')
+function freqVenues(kind) {
+  const c = new Map();
+  for (const e of state.entries) if (e.kind === kind) c.set(e.venue || '', (c.get(e.venue || '') || 0) + 1);
+  return [...c.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'ja')).map(x => x[0]);
+}
+// その会場（venue）でよく使う記録。[科目, 払い方, 相手, 会場]
+function frequent(kind, venue) {
   const c = new Map();
   for (const e of state.entries) {
-    if (e.kind !== kind) continue;
+    if (e.kind !== kind || (e.venue || '') !== venue) continue;
     const acc = kind === 'in' ? e.cr : e.dr, method = kind === 'in' ? e.dr : e.cr;
-    const k = JSON.stringify([acc, method, e.partner || '']);
+    const k = JSON.stringify([acc, method, e.partner || '', e.venue || '']);
     c.set(k, (c.get(k) || 0) + 1);
   }
   return [...c.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8).map(x => JSON.parse(x[0]));
@@ -347,9 +354,16 @@ function viewInput() {
   const kinds = [['out', '支出'], ['in', '収入'], ['move', 'お金の移動'], ['journal', '振替（上級）']];
   let body = '';
   const partners = [...new Set(state.entries.map(e => e.partner).filter(Boolean))];
-  const freq = (f.kind === 'in' || f.kind === 'out') && !f.editId ? frequent(f.kind) : [];
-  const chips = freq.length ? `<div class="hint">よく使う記録（押すと入ります）</div><div class="chips">${freq.map(([a, mth, p], i) =>
-    `<button class="chip" data-freq="${i}">${esc(a)}・${esc(METHOD_LABEL[mth] || mth)}${p ? '・' + esc(p) : ''}</button>`).join('')}</div>` : '';
+  // よく使う記録は会場ごとに分けて出す（上のタブで会場を切り替え）
+  const fvs = (f.kind === 'in' || f.kind === 'out') && !f.editId ? freqVenues(f.kind) : [];
+  let fv = ui.freqVenue;
+  if (fv === undefined || !fvs.includes(fv)) fv = f.venue && fvs.includes(f.venue) ? f.venue : fvs[0];
+  const freq = fvs.length ? frequent(f.kind, fv) : [];
+  ui.freqList = freq;
+  const chips = freq.length ? `<div class="freqbox"><div class="hint">よく使う記録（会場ごと・押すと入ります）</div>
+    ${fvs.length > 1 ? `<div class="chips fvtabs">${fvs.map(v => `<button type="button" class="chip${v === fv ? ' on' : ''}" data-fv="${esc(v)}">${esc(v || '共通（会場なし）')}</button>`).join('')}</div>` : ''}
+    <div class="chips">${freq.map(([a, mth, p], i) =>
+    `<button class="chip" data-freq="${i}">${esc(a)}・${esc(METHOD_LABEL[mth] || mth)}${p ? '・' + esc(p) : ''}</button>`).join('')}</div></div>` : '';
 
   if (f.kind === 'out') {
     const accs = [['仕入高', '仕入（売るための商品・材料）'], ...expenseNames().map(n => [n, n])];
@@ -528,11 +542,12 @@ function bindInput() {
     inp.dispatchEvent(new Event('change'));
     b.parentNode.querySelectorAll('.chip').forEach(c => c.classList.toggle('on', c === b));
   });
-  const freq = frequent(f.kind);
+  const freq = ui.freqList || [];
+  document.querySelectorAll('[data-fv]').forEach(b => b.onclick = () => { sync(); ui.freqVenue = b.dataset.fv; render(); });
   document.querySelectorAll('[data-freq]').forEach(b => b.onclick = () => {
     sync();
-    const [a, m, p] = freq[+b.dataset.freq];
-    f.acc = a; f.method = m; f.partner = p;
+    const [a, m, p, v] = freq[+b.dataset.freq];
+    f.acc = a; f.method = m; f.partner = p; f.venue = v || '';
     render();
     document.getElementById('f-amount').focus();
   });

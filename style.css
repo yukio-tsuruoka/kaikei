@@ -242,3 +242,13 @@ details summary { cursor: pointer; padding: 6px 0; font-weight: 600; }
   .brow .bname { grid-column: 1 / -1; }
   .brow .btags, .brow input { grid-column: 1 / -1; }
 }
+
+/* ver 1.12.0: iPad で日付の欄が横にはみ出して金額と重なるのを防ぐ */
+.row2 > *, .row3 > * { min-width: 0; }
+input[type="date"] { -webkit-appearance: none; appearance: none; display: block; min-width: 0; max-width: 100%; text-align: left; }
+input[type="date"]::-webkit-date-and-time-value { text-align: left; }
+/* よく使う記録（会場ごと） */
+.freqbox { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px 0; margin-bottom: 14px; }
+.fvtabs { margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px dashed var(--line); }
+.fvtabs .chip { background: var(--card); font-weight: 700; }
+.fvtabs .chip.on, .chips.pick .chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
