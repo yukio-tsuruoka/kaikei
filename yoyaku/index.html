@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>予約を入れる</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="予約を入れる">
+<meta name="theme-color" content="#1f6f5c">
+<style>
+:root{--bg:#f4f6f5;--card:#fff;--text:#1d2422;--muted:#66726d;--line:#d7dfdb;--acc:#1f6f5c;--accText:#fff;--sel:#d9efe7;--wed:#eceeed;--warn:#b3541e}
+@media (prefers-color-scheme:dark){:root{--bg:#121615;--card:#1b2120;--text:#e6ebe9;--muted:#9aa7a2;--line:#2f3936;--acc:#4fb89a;--accText:#08201a;--sel:#1f3c33;--wed:#232a28;--warn:#f0a070}}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,"Hiragino Sans","Yu Gothic UI",sans-serif;font-size:17px;line-height:1.5}
+main{max-width:720px;margin:0 auto;padding:calc(env(safe-area-inset-top) + 12px) 16px calc(env(safe-area-inset-bottom) + 120px)}
+h1{font-size:22px;margin:4px 0 12px}
+section{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:12px 14px;margin:12px 0}
+h2{font-size:17px;margin:0 0 10px;display:flex;justify-content:space-between;align-items:center;gap:8px}
+h2 small{font-weight:400;color:var(--muted);font-size:14px}
+button{font:inherit;color:inherit;border:1px solid var(--line);background:var(--card);border-radius:12px;cursor:pointer}
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chip{min-height:46px;padding:8px 16px;font-size:18px;position:relative}
+.chip.on,.day.on,.slot.on{background:var(--sel);border-color:var(--acc);border-width:2px;font-weight:700}
+.chip .x{display:none;position:absolute;top:-8px;right:-8px;width:26px;height:26px;border-radius:13px;background:var(--warn);color:#fff;font-size:15px;line-height:26px;text-align:center}
+.editing .chip .x{display:block}
+.link{border:none;background:none;color:var(--acc);font-size:15px;padding:6px 4px}
+.row{display:flex;gap:8px;margin-top:10px}
+input{font:inherit;font-size:18px;color:inherit;background:var(--bg);border:1px solid var(--line);border-radius:12px;padding:10px 12px;min-height:46px;flex:1;min-width:0}
+.days{display:grid;grid-template-columns:repeat(7,1fr);gap:6px}
+.dow{text-align:center;font-size:13px;color:var(--muted)}
+.day{min-height:56px;padding:4px 0;display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:18px}
+.day small{font-size:11px;color:var(--muted);line-height:1.1}
+.day.wed{background:var(--wed)}
+.day.blank{visibility:hidden}
+.sun{color:#c0392b}.sat{color:#2c6fbb}
+.slots{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
+.slot{min-height:64px;font-size:19px;display:flex;flex-direction:column;align-items:center;justify-content:center}
+.slot small{font-size:13px;color:var(--muted)}
+.bar{position:fixed;left:0;right:0;bottom:0;background:var(--card);border-top:1px solid var(--line);padding:10px 16px calc(env(safe-area-inset-bottom) + 10px)}
+.bar div{max-width:720px;margin:0 auto}
+#summary{font-size:15px;color:var(--muted);margin-bottom:6px;min-height:22px}
+#go{width:100%;min-height:56px;font-size:20px;font-weight:700;background:var(--acc);color:var(--accText);border:none}
+#go:disabled{opacity:.4}
+#done{display:none;background:var(--sel);border:2px solid var(--acc);border-radius:16px;padding:12px 14px;margin:12px 0}
+.hint{font-size:14px;color:var(--muted);margin:6px 0 0}
+</style>
+</head>
+<body>
+<main>
+  <h1>予約を入れる <small style="font-size:13px;color:var(--muted);font-weight:400">ver <span id="ver"></span></small></h1>
+
+  <div id="done"></div>
+
+  <section id="nameSec">
+    <h2>① お名前 <button class="link" id="editNames" type="button">名前を整理</button></h2>
+    <div class="chips" id="names"></div>
+    <div class="row"><input id="newName" placeholder="新しいお名前（例：山田）" autocomplete="off"></div>
+    <p class="hint" id="nameHint">一度入れたお名前は、次から上のボタンに出ます。</p>
+    <div class="row"><button class="link" id="hideNames" type="button"></button></div>
+  </section>
+
+  <section>
+    <h2>② 日にち <small id="monthLabel"></small></h2>
+    <div class="days" id="dows"></div>
+    <div class="days" id="days" style="margin-top:4px"></div>
+    <div class="row"><button class="link" id="prev" type="button">← 前の4週</button><span style="flex:1"></span><button class="link" id="next" type="button">次の4週 →</button></div>
+    <p class="hint">灰色は水曜（定休日）です。</p>
+  </section>
+
+  <section>
+    <h2>③ 時間</h2>
+    <div class="slots" id="slots"></div>
+  </section>
+</main>
+
+<div class="bar"><div>
+  <div id="summary">お名前・日にち・時間を選んでください</div>
+  <button id="go" type="button" disabled>Google カレンダーに入れる</button>
+</div></div>
+
+<script>
+const VERSION = '1.0.0';
+const KEY = 'yoyaku.names';
+const SLOTS = [
+  { id: 'am', label: '午前', sub: '9:00〜12:00', start: '090000', end: '120000' },
+  { id: 'pm', label: '午後', sub: '13:00〜18:00', start: '130000', end: '180000' },
+  { id: 'all', label: '一日', sub: '終日', all: true },
+];
+const WD = '日月火水木金土';
+const $ = id => document.getElementById(id);
+$('ver').textContent = VERSION;
+
+let names = [];
+try { names = JSON.parse(localStorage.getItem(KEY) || '[]'); } catch (e) {}
+const saveNames = () => { try { localStorage.setItem(KEY, JSON.stringify(names)); } catch (e) {} };
+
+const sel = { name: '', date: null, slot: null };
+let offset = 0;   // 何週ずつ動かしたか（4週単位）
+let editing = false;
+
+// お客様に見せる iPad では、ほかの方のお名前が見えないようにボタンを隠せる（端末ごとに覚える）
+let hidden = false;
+try { hidden = localStorage.getItem('yoyaku.hide') === '1'; } catch (e) {}
+$('hideNames').onclick = () => {
+  hidden = !hidden;
+  try { localStorage.setItem('yoyaku.hide', hidden ? '1' : '0'); } catch (e) {}
+  editing = false; renderNames();
+};
+
+function renderNames() {
+  const box = $('names');
+  box.innerHTML = '';
+  $('hideNames').textContent = hidden ? 'お名前のボタンを出す' : 'お名前のボタンを隠す（お客様に見せる iPad 用）';
+  box.style.display = hidden ? 'none' : '';
+  if (hidden) { $('editNames').style.display = 'none'; $('nameHint').textContent = 'お名前のボタンは隠しています。お名前は下の欄に入れてください。'; return; }
+  names.forEach(n => {
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'chip' + (sel.name === n && !$('newName').value.trim() ? ' on' : '');
+    b.textContent = n;
+    const x = document.createElement('span'); x.className = 'x'; x.textContent = '✕';
+    b.appendChild(x);
+    b.onclick = () => {
+      if (editing) { names = names.filter(v => v !== n); saveNames(); if (sel.name === n) sel.name = ''; renderNames(); update(); return; }
+      sel.name = n; $('newName').value = ''; renderNames(); update();
+    };
+    box.appendChild(b);
+  });
+  $('nameSec').classList.toggle('editing', editing);
+  $('editNames').textContent = editing ? '整理を終える' : '名前を整理';
+  $('editNames').style.display = names.length ? '' : 'none';
+  $('nameHint').textContent = editing ? '✕ のついたお名前を押すと、ボタンから消えます。' : '一度入れたお名前は、次から上のボタンに出ます。';
+}
+$('editNames').onclick = () => { editing = !editing; renderNames(); };
+$('newName').oninput = () => { sel.name = $('newName').value.trim(); renderNames(); update(); };
+
+const ymd = d => `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+const sameDay = (a, b) => a && b && ymd(a) === ymd(b);
+
+function renderDays() {
+  $('dows').innerHTML = [...WD].map((w, i) => `<div class="dow ${i === 0 ? 'sun' : i === 6 ? 'sat' : ''}">${w}</div>`).join('');
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const start = new Date(today); start.setDate(start.getDate() + offset * 28);
+  const box = $('days'); box.innerHTML = '';
+  for (let i = 0; i < start.getDay(); i++) { const s = document.createElement('div'); s.className = 'day blank'; box.appendChild(s); }
+  let lastMonth = -1;
+  for (let i = 0; i < 28; i++) {
+    const d = new Date(start); d.setDate(start.getDate() + i);
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'day' + (d.getDay() === 3 ? ' wed' : '') + (sameDay(d, sel.date) ? ' on' : '');
+    const top = d.getMonth() !== lastMonth ? `${d.getMonth() + 1}月` : (sameDay(d, today) ? '今日' : '');
+    lastMonth = d.getMonth();
+    b.innerHTML = `<small>${top || '&nbsp;'}</small><span class="${d.getDay() === 0 ? 'sun' : d.getDay() === 6 ? 'sat' : ''}">${d.getDate()}</span>`;
+    b.onclick = () => { sel.date = d; renderDays(); update(); };
+    box.appendChild(b);
+  }
+  const end = new Date(start); end.setDate(start.getDate() + 27);
+  $('monthLabel').textContent = `${start.getMonth() + 1}/${start.getDate()}〜${end.getMonth() + 1}/${end.getDate()}`;
+  $('prev').style.visibility = offset > 0 ? '' : 'hidden';
+}
+$('prev').onclick = () => { if (offset > 0) { offset--; renderDays(); } };
+$('next').onclick = () => { offset++; renderDays(); };
+
+function renderSlots() {
+  $('slots').innerHTML = '';
+  SLOTS.forEach(s => {
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'slot' + (sel.slot === s.id ? ' on' : '');
+    b.innerHTML = `${s.label}<small>${s.sub}</small>`;
+    b.onclick = () => { sel.slot = s.id; renderSlots(); update(); };
+    $('slots').appendChild(b);
+  });
+}
+
+function label() {
+  const d = sel.date, s = SLOTS.find(v => v.id === sel.slot);
+  return `${sel.name ? sel.name + '様　' : ''}${d ? `${d.getMonth() + 1}月${d.getDate()}日（${WD[d.getDay()]}）` : ''}${s ? '　' + s.label : ''}`;
+}
+function update() {
+  const ok = sel.name && sel.date && sel.slot;
+  $('go').disabled = !ok;
+  $('summary').textContent = ok ? label() : 'お名前・日にち・時間を選んでください';
+}
+
+$('go').onclick = () => {
+  const s = SLOTS.find(v => v.id === sel.slot), d = sel.date;
+  let dates;
+  if (s.all) { const n = new Date(d); n.setDate(d.getDate() + 1); dates = `${ymd(d)}/${ymd(n)}`; }
+  else dates = `${ymd(d)}T${s.start}/${ymd(d)}T${s.end}`;
+  const p = new URLSearchParams({ action: 'TEMPLATE', text: `予約 ${sel.name}様`, dates, ctz: 'Asia/Tokyo' });
+  const url = 'https://calendar.google.com/calendar/render?' + p.toString().replace(/\+/g, '%20');
+  if (!hidden) { names = [sel.name, ...names.filter(n => n !== sel.name)].slice(0, 30); saveNames(); }
+  const done = $('done');
+  done.style.display = 'block';
+  done.innerHTML = `<b>${label()}</b><br>Google カレンダーの画面で「<b>保存</b>」を押すと、予約が入ります。<br><span class="hint">空き状況の表には、1時間以内に反映されます。</span>`;
+  window.open(url, '_blank');
+  sel.date = null; sel.slot = null; sel.name = ''; $('newName').value = '';
+  renderNames(); renderDays(); renderSlots(); update();
+  window.scrollTo(0, 0);
+};
+
+renderNames(); renderDays(); renderSlots(); update();
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+</script>
+</body>
+</html>
