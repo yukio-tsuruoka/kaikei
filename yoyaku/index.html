@@ -86,6 +86,11 @@ input{font:inherit;font-size:18px;color:inherit;background:var(--bg);border:1px 
     <h2>③ 時間</h2>
     <div class="slots" id="slots"></div>
   </section>
+
+  <section>
+    <h2>④ 会場 <small>押さなくても入れられます</small></h2>
+    <div class="chips" id="venues"></div>
+  </section>
 </main>
 
 <div class="bar"><div>
@@ -94,7 +99,9 @@ input{font:inherit;font-size:18px;color:inherit;background:var(--bg);border:1px 
 </div></div>
 
 <script>
-const VERSION = '1.3.0';
+const VERSION = '1.4.0';
+// よく使う会場（押さなくても予約できる。選んだ会場は次も選ばれたまま）
+const VENUES = ['西新井', '品川', '関内', '二子玉川', '大宮', '昭島', '長野', '溝の口', 'SR', '西葛西'];
 // お店の予約に直接書き込む Google Apps Script（あなたの Google アカウントの「予約を入れる」）。合言葉がないと書き込めない。
 const GAS_URL = 'https://script.google.com/macros/s/AKfycbzI2iUaIF9MBRKsUdwDSiz8DUm_agwhKy8YFdKLOVymbIJ9Ol4gu43vLYFNjJAPUlz-Eg/exec';
 // 予約は家族のカレンダーに混ぜず、Google カレンダー「お店の予約」に入れる（空き状況の表もここから作る）
@@ -215,9 +222,21 @@ function renderSlots() {
   });
 }
 
+let venue = '';
+try { venue = localStorage.getItem('yoyaku.venue') || ''; } catch (e) {}
+function renderVenues() {
+  $('venues').innerHTML = VENUES.map(v => `<button type="button" class="chip${venue === v ? ' on' : ''}" data-venue="${v}">${v}</button>`).join('');
+}
+$('venues').onclick = e => {
+  const b = e.target.closest('[data-venue]'); if (!b) return;
+  venue = venue === b.dataset.venue ? '' : b.dataset.venue;
+  try { localStorage.setItem('yoyaku.venue', venue); } catch (e2) {}
+  renderVenues(); update();
+};
+
 function label() {
   const d = sel.date, s = SLOTS.find(v => v.id === sel.slot);
-  return `${sel.name ? sel.name + '様　' : ''}${d ? `${d.getMonth() + 1}月${d.getDate()}日（${WD[d.getDay()]}）` : ''}${s ? '　' + s.label : ''}`;
+  return `${sel.name ? sel.name + '様　' : ''}${d ? `${d.getMonth() + 1}月${d.getDate()}日（${WD[d.getDay()]}）` : ''}${s ? '　' + s.label : ''}${venue ? '　' + venue : ''}`;
 }
 function update() {
   const ok = sel.name && sel.date && sel.slot;
@@ -254,7 +273,8 @@ function googleUrl(s, d) {
   let dates;
   if (s.all) { const n = new Date(d); n.setDate(d.getDate() + 1); dates = `${ymd(d)}/${ymd(n)}`; }
   else dates = `${ymd(d)}T${s.start}/${ymd(d)}T${s.end}`;
-  const p = new URLSearchParams({ action: 'TEMPLATE', text: `予約 ${sel.name}様`, dates, ctz: 'Asia/Tokyo', src: CAL_ID });
+  const p = new URLSearchParams({ action: 'TEMPLATE', text: `予約 ${sel.name}様${venue ? '（' + venue + '）' : ''}`, dates, ctz: 'Asia/Tokyo', src: CAL_ID });
+  if (venue) p.set('location', venue);
   return 'https://calendar.google.com/calendar/render?' + p.toString().replace(/\+/g, '%20');
 }
 function reset() {
@@ -268,7 +288,7 @@ $('go').onclick = async () => {
   const fallbackUrl = googleUrl(s, d);
   const fallback = msg => showDone(`<b>${esc(text)}</b><br>${msg}<br><a href="${fallbackUrl}" target="_blank" rel="noopener">Google カレンダーの画面で入れる</a><span class="hint">（入れる先を「お店の予約」に選んでから保存）</span>`);
   if (!token) { fallback('まだ合言葉が入っていないので、Google の画面から入れてください。'); return; }
-  const body = { name: sel.name, date: `${ymd(d).slice(0, 4)}-${ymd(d).slice(4, 6)}-${ymd(d).slice(6)}`, slot: s.id };
+  const body = { name: sel.name, date: `${ymd(d).slice(0, 4)}-${ymd(d).slice(4, 6)}-${ymd(d).slice(6)}`, slot: s.id, venue };
   $('go').disabled = true; $('go').textContent = '入れています…';
   try {
     let res = await call(body);
@@ -286,7 +306,7 @@ $('go').onclick = async () => {
 };
 
 showSetup();
-renderNames(); renderDays(); renderSlots(); update();
+renderNames(); renderDays(); renderSlots(); renderVenues(); update();
 loadAvail();
 document.addEventListener('visibilitychange', () => { if (!document.hidden) loadAvail(); });
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
