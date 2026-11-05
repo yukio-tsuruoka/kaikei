@@ -3,7 +3,7 @@
    データはこの端末の中（localStorage）にだけ保存し、外へは送らない。 */
 
 const STORE_KEY = 'kaikei.v1';
-const APP_VERSION = '1.12.0';
+const APP_VERSION = '1.13.0';
 
 // ---------- 勘定科目 ----------
 const EXPENSES = [
@@ -174,7 +174,7 @@ function freshForm(kind) {
     acc: '', method: '', preset: '', dr: '', cr: '',
     amount: '', partner: '', memo: '', editId: null, venue: (prev && prev.venue) || '',
     rcpt: '', atena: '', tadashi: '', rstate: '', rreason: '',
-    orderDate: '', items: defaultItems(), treatment: '',
+    orderDate: '', items: defaultItems(), treatment: '', purpose: '',
   };
 }
 function itemsTotal(items) { return (items || []).reduce((s, it) => s + parseAmount(it.price) * (parseAmount(it.qty) || 0), 0); }
@@ -252,7 +252,7 @@ function entryText(e) {
 }
 function itemHtml(e) {
   const t = entryText(e);
-  const extra = [e.venue ? '［' + e.venue + '］' : '', e.partner, e.items && e.items.length ? itemsText(e.items) : '', e.treatment ? '施術: ' + e.treatment : '', e.memo]
+  const extra = [e.venue ? '［' + e.venue + '］' : '', e.partner, e.items && e.items.length ? itemsText(e.items) : '', e.treatment ? '施術: ' + e.treatment : '', e.purpose ? '目的: ' + e.purpose : '', e.memo]
     .filter(Boolean).map(esc).join('・');
   const [, mm, dd] = e.date.split('-');
   return `<button class="item" data-edit="${e.id}">
@@ -414,7 +414,12 @@ function viewInput() {
         </table></div>
         <datalist id="itemnames">${[...knownItems().keys()].map(n => `<option value="${esc(n)}">`).join('')}</datalist>
         <button class="btn" id="f-addrow" style="margin:8px 0 14px">＋ 行を追加</button>
-        <div class="field"><label>施術の内容（なくてもOK）</label><textarea id="f-treat" rows="3">${esc(f.treatment)}</textarea></div>
+        <div class="row2">
+          <div class="field"><label>どんな施術？（施術の内容・なくてもOK）</label><input id="f-treat" list="dl-treat" autocomplete="off" value="${esc(f.treatment)}" placeholder="例: 首・肩のリファイナリー 30分"></div>
+          <div class="field"><label>何のために？（施術の目的・なくてもOK）</label><input id="f-purpose" list="dl-purpose" autocomplete="off" value="${esc(f.purpose)}" placeholder="例: 肩こり・眠りが浅い"></div>
+        </div>
+        ${f.partner && lastTreat(f.partner, f.editId) ? `<div class="hint" style="margin:-6px 0 12px">${esc(lastTreatText(lastTreat(f.partner, f.editId)))}</div>` : ''}
+        ${treatLists()}
       </div>`;
   } else if (f.kind === 'move') {
     body = `<div class="field"><label>どんなお金の動き？</label><div class="presets">${MOVES.map(p =>
@@ -468,6 +473,7 @@ function bindInput() {
     if ($('f-order')) {
       f.orderDate = $('f-order').value;
       f.treatment = $('f-treat').value.trim();
+      f.purpose = $('f-purpose').value.trim();
       f.rcpt = $('f-rcpt').value;
       f.atena = $('f-atena').value.trim();
       f.tadashi = $('f-tadashi').value.trim();
@@ -600,7 +606,7 @@ function bindInput() {
         reason: f.rstate === 'later' ? (f.rreason || '領収書切れ') : (old && old.reason) || '',
       } : null;
       if (receipt && !receipt.atena) return alert('領収書の宛名を入れてください。');
-      Object.assign(rec, { orderDate: f.orderDate, items, treatment: f.treatment, receipt });
+      Object.assign(rec, { orderDate: f.orderDate, items, treatment: f.treatment, purpose: f.purpose, receipt });
       // 初めてのお客様なら、今回の領収書の選び方をその人の設定として覚える
       if (f.partner && !profile(f.partner)) {
         state.customers = state.customers || {};
@@ -639,7 +645,7 @@ function bindInput() {
 function viewList() {
   const { y, m } = ui.ym;
   const q = ui.search.trim();
-  let list = q ? state.entries.filter(e => [e.dr, e.cr, e.partner, e.memo, String(e.amount), itemsText(e.items), e.treatment, e.venue, e.receipt ? e.receipt.atena : ''].join(' ').includes(q)) : inMonth(y, m);
+  let list = q ? state.entries.filter(e => [e.dr, e.cr, e.partner, e.memo, String(e.amount), itemsText(e.items), e.treatment, e.purpose, e.venue, e.receipt ? e.receipt.atena : ''].join(' ').includes(q)) : inMonth(y, m);
   list = sorted(list).reverse();
   const pl = profitLoss(list);
   return `<h2>帳簿</h2>
@@ -1004,8 +1010,8 @@ function viewCustomer() {
 
   <h2>施術の履歴（${treats.length} 件）</h2>
   <div class="card tablewrap"><table>
-    <tr><th>日付</th><th>施術</th><th class="right">回数</th><th class="right">金額</th><th>内容</th></tr>
-    ${treats.map(({ e, it }) => `<tr><td>${jdate(e.orderDate || e.date)}</td><td>${esc(it.name)}</td><td class="num">${it.qty}</td><td class="num">${plain(it.price * it.qty)}</td><td class="small">${esc(e.treatment)}</td></tr>`).join('') || '<tr><td colspan="5" class="muted">施術の記録はありません。</td></tr>'}
+    <tr><th>日付</th><th>施術</th><th class="right">回数</th><th class="right">金額</th><th>どんな施術</th><th>目的</th></tr>
+    ${treats.map(({ e, it }) => `<tr><td>${jdate(e.orderDate || e.date)}</td><td>${esc(it.name)}</td><td class="num">${it.qty}</td><td class="num">${plain(it.price * it.qty)}</td><td class="small">${esc(e.treatment)}</td><td class="small">${esc(e.purpose)}</td></tr>`).join('') || '<tr><td colspan="6" class="muted">施術の記録はありません。</td></tr>'}
   </table></div>
 
   <h2>測定の履歴（${measures.length} 件）</h2>
@@ -1116,13 +1122,13 @@ function sessionData(key) {
   state.sessions = state.sessions || {};
   return state.sessions[key] || (state.sessions[key] = { rows: {} });
 }
-function sRow(sess, name) { return sess.rows[name] || (sess.rows[name] = { att: '', qty: {}, none: false, pay: '', rcpt: '', treatment: '' }); }
+function sRow(sess, name) { return sess.rows[name] || (sess.rows[name] = { att: '', qty: {}, none: false, pay: '', rcpt: '', treatment: '', purpose: '' }); }
 function rowItems(name, r) {
   return SESSION_ITEMS().filter(it => (r.qty[it.key] || 0) > 0).map(it => ({ type: it.type, name: it.name, price: priceFor(name, it.key), qty: r.qty[it.key] }));
 }
 function rowTotal(name, r) { return rowItems(name, r).reduce((s, it) => s + it.price * it.qty, 0); }
 function rowNeedsRcpt(name) { const p = profile(name); return !!(p && p.receipt); }
-function rowSig(r) { return JSON.stringify([r.att, r.qty, r.none, r.pay, r.rcpt, r.treatment]); }
+function rowSig(r) { return JSON.stringify([r.att, r.qty, r.none, r.pay, r.rcpt, r.treatment, r.purpose || '']); }
 function rowState(name, r) {
   // 前に保存した記録が残っているのに、休み・購入なし・出欠未確認に変えた → 保存して取り消す必要がある
   const stale = r.entryId && state.entries.some(e => e.id === r.entryId) && (r.att !== 'in' || !rowItems(name, r).length);
@@ -1138,6 +1144,18 @@ function rowState(name, r) {
   if (missing.length) return { k: 'partial', label: missing.join('・') + 'がまだ', done: false };
   if (r.savedSig !== rowSig(r)) return { k: 'unsaved', label: '未保存', done: false };
   return { k: 'ok', label: '保存済み', done: true };
+}
+// その方の前回の施術（内容か目的が入っている最後の収入）。exceptId の記録と、いま開いている会場の日は除く
+function lastTreat(name, exceptId) {
+  const cur = ui.sess ? sessKey(ui.sess.venue, ui.sess.date) : '';
+  return sorted(state.entries.filter(e => e.kind === 'in' && e.partner === name && e.id !== exceptId && (e.treatment || e.purpose) && !(ui.view === 'session' && e.session === cur))).pop() || null;
+}
+function lastTreatText(e) { return `前回の施術（${jdate(e.orderDate || e.date)}${e.venue ? '・' + e.venue : ''}）: ${e.treatment || '—'}${e.purpose ? '／目的: ' + e.purpose : ''}`; }
+// 施術の内容・目的の入力候補（これまでに入れたもの・新しい順）。書き方をそろえるため
+function treatLists() {
+  const pick = k => [...new Set(sorted(state.entries.filter(e => e.kind === 'in' && e[k])).reverse().map(e => e[k]))].slice(0, 40);
+  return `<datalist id="dl-treat">${pick('treatment').map(v => `<option value="${esc(v)}">`).join('')}</datalist>
+    <datalist id="dl-purpose">${pick('purpose').map(v => `<option value="${esc(v)}">`).join('')}</datalist>`;
 }
 function lastOrder(name, venue) {
   const list = sorted(state.entries.filter(e => e.kind === 'in' && e.partner === name && e.session !== sessKey(venue, ui.sess.date)));
@@ -1184,7 +1202,8 @@ function viewSession() {
       ${items.length ? `<div class="srow"><span class="slab">支払い</span>${PAY_CHOICES.map(([v, l]) => btn('pay', v, l, r.pay === v)).join('')}</div>` : ''}
       ${items.length && pr && pr.receipt ? `<div class="srow"><span class="slab">領収書</span>${btn('rcpt', 'given', '渡した', r.rcpt === 'given')}${btn('rcpt', 'later', '渡せなかった', r.rcpt === 'later')}
         <div class="small muted" style="width:100%">宛名: ${esc(pr.atena || n)} 様／但し: ${esc(pr.tadashi || DEFAULT_TADASHI)}</div></div>` : ''}
-      ${r.qty['施術'] ? `<input class="stext" data-stext="treatment" data-i="${i}" placeholder="施術の内容（なくてもOK）" value="${esc(r.treatment)}">` : ''}
+      ${r.qty['施術'] ? `<div class="stexts"><input class="stext" data-stext="treatment" data-i="${i}" list="dl-treat" autocomplete="off" placeholder="どんな施術？（なくてもOK）" value="${esc(r.treatment)}">
+        <input class="stext" data-stext="purpose" data-i="${i}" list="dl-purpose" autocomplete="off" placeholder="何のために？（目的・なくてもOK）" value="${esc(r.purpose || '')}"></div>` : ''}
       ${r.fromPrev ? '<div class="small" style="color:var(--in)">前回の内容を入れました。今日の内容と合っているか確かめてください。</div>' : ''}`;
     }
     const prev = r.att !== 'out' && !rowItems(n, r).length && lastOrder(n, s.venue);
@@ -1192,6 +1211,7 @@ function viewSession() {
       <div class="shead"><div class="sname">${esc(n)}${pr && pr.receipt ? ' <span class="badge">領収書</span>' : ''}${bookedLabel(key, n) ? ` <span class="badge in">${esc(bookedLabel(key, n))}</span>` : ''}</div>
         <span class="sstate">${stt.label}</span>${total ? `<b class="num">${yen(total)}</b>` : ''}</div>
       <div class="srow">${btn('att', 'in', '来た', r.att === 'in')}${btn('att', 'out', '休み', r.att === 'out')}${prev ? btn('prev', '', '前回と同じ', false) : ''}</div>
+      ${r.att !== 'out' && lastTreat(n) ? `<div class="sprev">${esc(lastTreatText(lastTreat(n)))}</div>` : ''}
       ${body}</div>`;
   };
 
@@ -1208,6 +1228,7 @@ function viewSession() {
   </div>
   <div class="seg">${[['todo', 'まだの人だけ'], ['all', '全員']].map(([k, l]) => `<button data-sfilter="${k}" class="${s.filter === k ? 'on' : ''}">${l}</button>`).join('')}</div>
   <div class="field"><input id="s-q" placeholder="お名前で探す" value="${esc(q)}"></div>
+  ${treatLists()}
   <div class="sgrid">${shown.map(card).join('') || `<div class="card">${s.filter === 'todo' && !q ? '全員の対応が終わっています。' : '該当する人はいません。'}</div>`}</div>
   <div class="card" style="margin-top:14px">
     <h2 style="margin-top:0">名簿にいない人（飛び入り・初めての方）</h2>
@@ -1235,7 +1256,7 @@ function sessionAction(t) {
   else if (act === 'rcpt') { r.rcpt = r.rcpt === v ? '' : v; }
   else if (act === 'prev') {
     const e = lastOrder(name, s.venue); if (!e) return;
-    r.att = 'in'; r.qty = {}; r.none = false; r.fromPrev = true;
+    r.att = 'in'; r.qty = {}; r.none = false; r.fromPrev = true; r.treatment = e.treatment || ''; r.purpose = e.purpose || '';
     for (const it of e.items || []) {
       const k = it.type === 'treat' ? '施術' : it.type === 'measure' ? '測定' : it.name;
       if (SESSION_ITEMS().some(x => x.key === k)) r.qty[k] = (r.qty[k] || 0) + it.qty;
@@ -1271,7 +1292,7 @@ function saveSession() {
     const pr = profile(name);
     const rec = {
       date: s.date, kind: 'in', dr: r.pay, cr: '売上高', amount: rowTotal(name, r), partner: name, memo: '', venue: s.venue,
-      orderDate: s.date, items, treatment: r.qty['施術'] ? r.treatment : '', session: key,
+      orderDate: s.date, items, treatment: r.qty['施術'] ? r.treatment : '', purpose: r.qty['施術'] ? (r.purpose || '') : '', session: key,
       receipt: pr && pr.receipt ? { atena: pr.atena || name, tadashi: pr.tadashi || DEFAULT_TADASHI, issued: r.rcpt === 'given', issuedDate: r.rcpt === 'given' ? s.date : '', reason: r.rcpt === 'later' ? '領収書切れ' : '' } : null,
     };
     if (entry) { Object.assign(entry, rec, { updated: Date.now() }); updated++; }
@@ -1445,10 +1466,10 @@ function bindSettings() {
     e.target.value = '';
   };
   $('b-csv').onclick = () => {
-    const head = ['日付', '借方科目', '借方金額', '貸方科目', '貸方金額', '取引先', '摘要', '種類', '注文日', '注文の内容', '施術の内容', '会場', '領収書', '宛名', '但し書き', '領収書発行'];
+    const head = ['日付', '借方科目', '借方金額', '貸方科目', '貸方金額', '取引先', '摘要', '種類', '注文日', '注文の内容', '施術の内容', '施術の目的', '会場', '領収書', '宛名', '但し書き', '領収書発行'];
     const q = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
     const lines = sorted(state.entries).map(e => [e.date.replace(/-/g, '/'), e.dr, e.amount, e.cr, e.amount, e.partner, e.memo, KIND_LABEL[e.kind],
-      (e.orderDate || '').replace(/-/g, '/'), (e.items || []).map(it => `${it.name} ${it.price}円×${it.qty}`).join(' / '), e.treatment, e.venue, e.receipt ? '必要' : '', e.receipt ? e.receipt.atena : '', e.receipt ? e.receipt.tadashi : '', e.receipt ? (e.receipt.issued ? '済 ' + (e.receipt.issuedDate || '') : '未（' + (e.receipt.reason || '') + '）') : ''].map(q).join(','));
+      (e.orderDate || '').replace(/-/g, '/'), (e.items || []).map(it => `${it.name} ${it.price}円×${it.qty}`).join(' / '), e.treatment, e.purpose, e.venue, e.receipt ? '必要' : '', e.receipt ? e.receipt.atena : '', e.receipt ? e.receipt.tadashi : '', e.receipt ? (e.receipt.issued ? '済 ' + (e.receipt.issuedDate || '') : '未（' + (e.receipt.reason || '') + '）') : ''].map(q).join(','));
     download(`仕訳帳_${stamp()}.csv`, '﻿' + [head.map(q).join(','), ...lines].join('\r\n'), 'text/csv');
   };
   $('y-year').onchange = e => { ui.year = +e.target.value; render(); };
@@ -1876,7 +1897,7 @@ document.addEventListener('click', e => {
     const en = state.entries.find(x => x.id === t.dataset.edit); if (!en) return;
     ui.form = { kind: en.kind, date: en.date, amount: String(en.amount), partner: en.partner || '', memo: en.memo || '', editId: en.id,
       acc: en.kind === 'in' ? en.cr : en.dr, method: en.kind === 'in' ? en.dr : en.cr, preset: en.preset || '', dr: en.dr, cr: en.cr,
-      orderDate: en.orderDate || '', treatment: en.treatment || '', venue: en.venue || '',
+      orderDate: en.orderDate || '', treatment: en.treatment || '', purpose: en.purpose || '', venue: en.venue || '',
       rcpt: en.receipt ? 'yes' : 'no', atena: en.receipt ? en.receipt.atena : '', tadashi: en.receipt ? en.receipt.tadashi : '', rstate: en.receipt ? (en.receipt.issued ? 'given' : 'later') : '', rreason: en.receipt ? en.receipt.reason || '' : '',
       items: en.items && en.items.length ? en.items.map(it => ({ type: it.type || 'goods', name: it.name, price: String(it.price), qty: String(it.qty) })) : defaultItems() };
     go('input');
@@ -1944,9 +1965,9 @@ document.addEventListener('change', e => {
 });
 document.addEventListener('input', e => {
   if (e.target.dataset && e.target.dataset.cprice !== undefined) { const v = parseAmount(e.target.value); e.target.value = v ? plain(v) : ''; return; }
-  if (e.target.dataset && e.target.dataset.stext) { // 施術の内容：打つたびに保存（画面は描き直さない）
+  if (e.target.dataset && e.target.dataset.stext) { // 施術の内容・目的：打つたびに保存（画面は描き直さない）
     const r = sRow(sessionData(sessKey(ui.sess.venue, ui.sess.date)), ui.sessNames[+e.target.dataset.i]);
-    r.treatment = e.target.value; save(); return;
+    r[e.target.dataset.stext === 'purpose' ? 'purpose' : 'treatment'] = e.target.value; save(); return;
   }
   if (e.target.id === 's-q') { ui.sess.q = e.target.value; const pos = e.target.selectionStart; render(); const el = document.getElementById('s-q'); el.focus(); el.setSelectionRange(pos, pos); return; }
   if (e.target.id === 'search' || e.target.id === 'c-search') {

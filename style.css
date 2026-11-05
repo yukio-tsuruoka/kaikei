@@ -252,3 +252,9 @@ input[type="date"]::-webkit-date-and-time-value { text-align: left; }
 .fvtabs { margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px dashed var(--line); }
 .fvtabs .chip { background: var(--card); font-weight: 700; }
 .fvtabs .chip.on, .chips.pick .chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+/* ver 1.13.0: 施術の内容と目的 */
+.stexts { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.stexts .stext { margin-top: 6px; min-width: 0; }
+@media (max-width: 640px) { .stexts { grid-template-columns: 1fr; } }
+.sprev { font-size: 13px; color: var(--muted); margin: -2px 0 6px; }
