@@ -82,7 +82,9 @@ input{font:inherit;font-size:18px;color:inherit;background:var(--bg);border:1px 
 </div></div>
 
 <script>
-const VERSION = '1.0.0';
+const VERSION = '1.1.0';
+// 予約は家族のカレンダーに混ぜず、Google カレンダー「お店の予約」に入れる（空き状況の表もここから作る）
+const CAL_ID = '545157a42b9b6dec2e1d907b96090e0d28e9c9b3bbd445b3ecc5cd70c38bae56@group.calendar.google.com';
 const KEY = 'yoyaku.names';
 const SLOTS = [
   { id: 'am', label: '午前', sub: '9:00〜12:00', start: '090000', end: '120000' },
@@ -190,12 +192,12 @@ $('go').onclick = () => {
   let dates;
   if (s.all) { const n = new Date(d); n.setDate(d.getDate() + 1); dates = `${ymd(d)}/${ymd(n)}`; }
   else dates = `${ymd(d)}T${s.start}/${ymd(d)}T${s.end}`;
-  const p = new URLSearchParams({ action: 'TEMPLATE', text: `予約 ${sel.name}様`, dates, ctz: 'Asia/Tokyo' });
+  const p = new URLSearchParams({ action: 'TEMPLATE', text: `予約 ${sel.name}様`, dates, ctz: 'Asia/Tokyo', src: CAL_ID });
   const url = 'https://calendar.google.com/calendar/render?' + p.toString().replace(/\+/g, '%20');
   if (!hidden) { names = [sel.name, ...names.filter(n => n !== sel.name)].slice(0, 30); saveNames(); }
   const done = $('done');
   done.style.display = 'block';
-  done.innerHTML = `<b>${label()}</b><br>Google カレンダーの画面で「<b>保存</b>」を押すと、予約が入ります。<br><span class="hint">空き状況の表には、1時間以内に反映されます。</span>`;
+  done.innerHTML = `<b>${label()}</b><br>Google カレンダーの画面で、入れる先が「<b>お店の予約</b>」になっているのを確かめて「<b>保存</b>」を押してください。<br><span class="hint">空き状況の表には、1時間以内に反映されます。</span>`;
   window.open(url, '_blank');
   sel.date = null; sel.slot = null; sel.name = ''; $('newName').value = '';
   renderNames(); renderDays(); renderSlots(); update();
