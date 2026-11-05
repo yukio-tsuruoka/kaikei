@@ -1,8 +1,9 @@
 // 会場の情報（iPad 用・オフライン）
 // 会場ごとの住所・連絡先・会場代・設備・持ち物・開催日のメモを、この iPad の中だけに保存する。
 // 直したら APP_VERSION と sw.js の CACHE の番号を上げ、下の HISTORY に1行足す。
-const APP_VERSION = '1.2.0';
+const APP_VERSION = '1.2.1';
 const HISTORY = [
+  ['1.2.1', '2026-11-06', '打ち合わせを「LINE で送る」ボタン（LINE が開いて、送る相手を選ぶだけ）。'],
   ['1.2.0', '2026-11-06', '会場ごとの打ち合わせ。確認する項目・決まったこと・宿題・次回の記録、印刷、LINE 用にコピー。'],
   ['1.1.0', '2026-11-05', 'お手洗いの場所の案内。お客様に見せる大きな表示と、LINE に貼れるコピー。'],
   ['1.0.0', '2026-11-05', '最初の版。会場の一覧・くわしい情報・設備・持ち物チェック・開催日のメモ・バックアップ。'],
@@ -253,7 +254,7 @@ function meetCard(v) {
       <div class="checks" style="margin-bottom:12px">${todos.map(o => `<button class="ck" data-todo="${o.m.id}:${o.i}"><span class="box"></span><span class="t">${esc(o.t.t)}<br><span class="small muted">${esc(o.t.who || '')}${o.t.due ? '・' + esc(jdate(o.t.due)) + 'まで' : ''}${o.t.due && o.t.due < today() ? ' <b style="color:var(--out)">期限すぎ</b>' : ''}</span></span></button>`).join('')}</div>` : ''}
     <div class="days">${ms.map(m => `<div class="d"><span>${esc(jdate(m.date))}<br><span class="small muted">${esc(m.how || '')}</span></span>
       <span class="m"><button class="linkish" data-meet="${m.id}">${esc(firstLine(m.decided) || '（決まったことは未記入）')}</button>${m.them ? `<br><span class="small muted">先方: ${esc(m.them)}</span>` : ''}</span>
-      <span class="mbtns"><button data-mprint="${m.id}">印刷</button><button data-mcopy="${m.id}">コピー</button></span></div>`).join('') || '<div class="muted">まだ記録はありません。打ち合わせの前に「＋ 打ち合わせを記録」を開くと、確認することの一覧として使えます。</div>'}</div>
+      <span class="mbtns"><button data-mline="${m.id}">LINE で送る</button><button data-mprint="${m.id}">印刷</button><button data-mcopy="${m.id}">コピー</button></span></div>`).join('') || '<div class="muted">まだ記録はありません。打ち合わせの前に「＋ 打ち合わせを記録」を開くと、確認することの一覧として使えます。</div>'}</div>
   </div>`;
 }
 function blankMeet(v) {
@@ -296,7 +297,7 @@ function viewMeet() {
     <div class="btns"><button class="btn" data-act="todoadd">＋ 宿題を足す</button></div>
   </div>
   ${isNew ? '' : '<div class="btns" style="margin-bottom:14px"><button class="btn danger" data-act="meetdel">この打ち合わせを消す</button></div>'}
-  <div class="sticky-save"><button class="btn" data-act="meetcancel">やめる</button><button class="btn" data-act="meetprint">🖨 印刷</button><button class="btn primary" data-act="meetsave">保存する</button></div>`;
+  <div class="sticky-save"><button class="btn" data-act="meetcancel">やめる</button><button class="btn" data-act="meetline">LINE で送る</button><button class="btn" data-act="meetprint">🖨 印刷</button><button class="btn primary" data-act="meetsave">保存する</button></div>`;
 }
 function meetText(v, m) {
   const lines = [`【${v.name} 打ち合わせ ${jdate(m.date)}${m.time ? ' ' + m.time : ''}】`];
@@ -393,6 +394,7 @@ document.addEventListener('click', e => {
   }
   if (d.meet) { const v = byId(ui.id); ui.mform = JSON.parse(JSON.stringify(v.meets.find(m => m.id === d.meet))); ui.mform.agenda = ui.mform.agenda || {}; ui.mform.todos = ui.mform.todos || []; go('meet'); return; }
   if (d.mprint) { const v = byId(ui.id); printSheet(v, v.meets.find(m => m.id === d.mprint)); return; }
+  if (d.mline) { const v = byId(ui.id); lineSend(meetText(v, v.meets.find(m => m.id === d.mline))); return; }
   if (d.mcopy) { const v = byId(ui.id); copyText(meetText(v, v.meets.find(m => m.id === d.mcopy))); return; }
   if (d.todo) {
     const [mid, i] = d.todo.split(':'), v = byId(ui.id), m = v.meets.find(x => x.id === mid);
@@ -432,6 +434,7 @@ document.addEventListener('click', e => {
   else if (act === 'printblank') printSheet(byId(ui.id), null);
   else if (act === 'todoadd') { ui.mform.todos.push({ t: '', who: 'こちら', due: '', done: false }); render(); const ins = document.querySelectorAll('[data-tt]'); if (ins.length) ins[ins.length - 1].focus(); }
   else if (act === 'meetcancel') { ui.mform = null; go('venue'); }
+  else if (act === 'meetline') lineSend(meetText(byId(ui.id), ui.mform));
   else if (act === 'meetprint') printSheet(byId(ui.id), ui.mform);
   else if (act === 'meetsave') {
     const v = byId(ui.id), m = ui.mform;
@@ -500,6 +503,11 @@ function showGuide(v) {
     ${v.toiletMore ? `<div class="bm">${esc(v.toiletMore)}</div>` : ''}
     <div class="bx">画面を押すと閉じます</div></button>`;
   document.body.appendChild(d);
+}
+// LINE を開いて、送る相手を選ぶ画面を出す（文は入った状態）。LINE が入っていないときはコピーにする
+function lineSend(text) {
+  copyText(text);
+  window.open('https://line.me/R/share?text=' + encodeURIComponent(text), '_blank');
 }
 function copyText(s) {
   const done = () => toast('コピーしました。LINE に貼りつけてください');
