@@ -54,6 +54,13 @@ input{font:inherit;font-size:18px;color:inherit;background:var(--bg);border:1px 
 
   <div id="done"></div>
 
+  <section id="setup" style="display:none">
+    <h2>はじめに（この iPhone・iPad で1回だけ）</h2>
+    <p class="hint" style="margin-top:0">お送りした「合言葉」を貼り付けて「覚える」を押してください。これで、ボタンを押すだけで「お店の予約」に入るようになります。</p>
+    <div class="row"><input id="tokenIn" placeholder="合言葉" autocomplete="off" autocapitalize="off" spellcheck="false"><button class="chip" id="tokenSave" type="button">覚える</button></div>
+    <p class="hint" id="tokenMsg"></p>
+  </section>
+
   <section id="nameSec">
     <h2>① お名前 <button class="link" id="editNames" type="button">名前を整理</button></h2>
     <div class="chips" id="names"></div>
@@ -78,11 +85,13 @@ input{font:inherit;font-size:18px;color:inherit;background:var(--bg);border:1px 
 
 <div class="bar"><div>
   <div id="summary">お名前・日にち・時間を選んでください</div>
-  <button id="go" type="button" disabled>Google カレンダーに入れる</button>
+  <button id="go" type="button" disabled>お店の予約に入れる</button>
 </div></div>
 
 <script>
-const VERSION = '1.1.0';
+const VERSION = '1.2.0';
+// お店の予約に直接書き込む Google Apps Script（あなたの Google アカウントの「予約を入れる」）。合言葉がないと書き込めない。
+const GAS_URL = 'https://script.google.com/macros/s/AKfycbzI2iUaIF9MBRKsUdwDSiz8DUm_agwhKy8YFdKLOVymbIJ9Ol4gu43vLYFNjJAPUlz-Eg/exec';
 // 予約は家族のカレンダーに混ぜず、Google カレンダー「お店の予約」に入れる（空き状況の表もここから作る）
 const CAL_ID = '545157a42b9b6dec2e1d907b96090e0d28e9c9b3bbd445b3ecc5cd70c38bae56@group.calendar.google.com';
 const KEY = 'yoyaku.names';
@@ -187,23 +196,67 @@ function update() {
   $('summary').textContent = ok ? label() : 'お名前・日にち・時間を選んでください';
 }
 
-$('go').onclick = () => {
-  const s = SLOTS.find(v => v.id === sel.slot), d = sel.date;
+const esc = t => String(t).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+let token = '';
+try { token = localStorage.getItem('yoyaku.token') || ''; } catch (e) {}
+function showSetup() { $('setup').style.display = token ? 'none' : ''; }
+async function call(body) {
+  const r = await fetch(GAS_URL, { method: 'POST', body: JSON.stringify({ token, ...body }) });
+  return r.json();
+}
+$('tokenSave').onclick = async () => {
+  const t = $('tokenIn').value.trim();
+  if (!t) return;
+  $('tokenMsg').textContent = '確かめています…';
+  const keep = token; token = t;
+  try {
+    const res = await call({ action: 'ping' });
+    if (!res.ok) throw new Error(res.error);
+    try { localStorage.setItem('yoyaku.token', t); } catch (e) {}
+    $('tokenMsg').textContent = ''; $('tokenIn').value = ''; showSetup();
+    showDone('合言葉を覚えました。これで予約を入れられます。');
+  } catch (e) {
+    token = keep;
+    $('tokenMsg').textContent = String(e.message) === 'token' ? '合言葉が違うようです。もう一度貼り付けてください。' : 'つながりませんでした。ネットにつながっているか確かめて、もう一度押してください。';
+  }
+};
+function showDone(html) { const d = $('done'); d.style.display = 'block'; d.innerHTML = html; window.scrollTo(0, 0); }
+function googleUrl(s, d) {
   let dates;
   if (s.all) { const n = new Date(d); n.setDate(d.getDate() + 1); dates = `${ymd(d)}/${ymd(n)}`; }
   else dates = `${ymd(d)}T${s.start}/${ymd(d)}T${s.end}`;
   const p = new URLSearchParams({ action: 'TEMPLATE', text: `予約 ${sel.name}様`, dates, ctz: 'Asia/Tokyo', src: CAL_ID });
-  const url = 'https://calendar.google.com/calendar/render?' + p.toString().replace(/\+/g, '%20');
-  if (!hidden) { names = [sel.name, ...names.filter(n => n !== sel.name)].slice(0, 30); saveNames(); }
-  const done = $('done');
-  done.style.display = 'block';
-  done.innerHTML = `<b>${label()}</b><br>Google カレンダーの画面で、入れる先が「<b>お店の予約</b>」になっているのを確かめて「<b>保存</b>」を押してください。<br><span class="hint">空き状況の表には、1時間以内に反映されます。</span>`;
-  window.open(url, '_blank');
+  return 'https://calendar.google.com/calendar/render?' + p.toString().replace(/\+/g, '%20');
+}
+function reset() {
   sel.date = null; sel.slot = null; sel.name = ''; $('newName').value = '';
   renderNames(); renderDays(); renderSlots(); update();
-  window.scrollTo(0, 0);
+}
+
+$('go').onclick = async () => {
+  const s = SLOTS.find(v => v.id === sel.slot), d = sel.date, text = label();
+  if (!hidden) { names = [sel.name, ...names.filter(n => n !== sel.name)].slice(0, 30); saveNames(); }
+  const fallbackUrl = googleUrl(s, d);
+  const fallback = msg => showDone(`<b>${esc(text)}</b><br>${msg}<br><a href="${fallbackUrl}" target="_blank" rel="noopener">Google カレンダーの画面で入れる</a><span class="hint">（入れる先を「お店の予約」に選んでから保存）</span>`);
+  if (!token) { fallback('まだ合言葉が入っていないので、Google の画面から入れてください。'); return; }
+  const body = { name: sel.name, date: `${ymd(d).slice(0, 4)}-${ymd(d).slice(4, 6)}-${ymd(d).slice(6)}`, slot: s.id };
+  $('go').disabled = true; $('go').textContent = '入れています…';
+  try {
+    let res = await call(body);
+    if (!res.ok && res.error === 'conflict') {
+      if (confirm(`その時間には、もう「${res.titles.join('」「')}」が入っています。\nそれでも入れますか？`)) res = await call({ ...body, force: true });
+      else { showDone(`<b>${esc(text)}</b><br>入れるのをやめました。`); $('go').textContent = 'お店の予約に入れる'; update(); return; }
+    }
+    if (res.ok) { showDone(`<b>${esc(text)}</b><br>✓ 「<b>お店の予約</b>」に入れました。<br><span class="hint">空き状況の表には、1時間以内に反映されます。</span>`); reset(); }
+    else if (res.error === 'token') { try { localStorage.removeItem('yoyaku.token'); } catch (e) {} token = ''; showSetup(); fallback('合言葉が変わったようです。上の欄に新しい合言葉を入れてください。'); }
+    else fallback('うまく入りませんでした。');
+  } catch (e) {
+    fallback('つながりませんでした（ネットがないかもしれません）。');
+  }
+  $('go').textContent = 'お店の予約に入れる'; update();
 };
 
+showSetup();
 renderNames(); renderDays(); renderSlots(); update();
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 </script>

@@ -1,6 +1,6 @@
 // 「予約を入れる」の画面をiPhone/iPadに保存しておく（予約の登録そのものはネットが必要）。
 // 直したら CACHE の番号を上げる（index.html の VERSION と同じにする）。
-const CACHE = 'yoyaku-1.1.0';
+const CACHE = 'yoyaku-1.2.0';
 const FILES = ['./', 'index.html', 'manifest.webmanifest', 'icon-180.png', 'icon-192.png', 'icon-512.png'];
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE)
