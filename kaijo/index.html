@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>会場の情報</title>
+<meta name="theme-color" content="#2b5f9e">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="会場の情報">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" href="icon-192.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <h1>会場の情報</h1>
+  <span id="offline" class="pill" hidden>オフライン</span>
+  <button id="newver" class="pill" hidden onclick="location.reload()" style="border:0;font:inherit;font-size:13px;background:var(--accent);color:#fff">新しい版に切り替える</button>
+  <span id="appver" class="muted small"></span>
+</header>
+<main id="view"></main>
+<nav class="tabs" id="tabs">
+  <button data-go="list">会場の一覧</button>
+  <button data-go="settings">設定</button>
+</nav>
+<div id="toast" class="toast" hidden></div>
+<script src="app.js"></script>
+</body>
+</html>
