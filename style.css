@@ -196,3 +196,49 @@ details summary { cursor: pointer; padding: 6px 0; font-weight: 600; }
 .chips.pick { margin-top: 6px; }
 .chip.on { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 700; }
 #items select[data-it=type] { min-width: 84px; padding-left: 8px; padding-right: 4px; }
+
+/* ---- 予約（会場・日ごとの参加予定、品川の予約ボード） ---- */
+.bgrid { display: grid; grid-template-columns: 1fr; gap: 12px; }
+@media (min-width: 820px) { .bgrid { grid-template-columns: 1fr 1fr; } }
+.bcard { margin-bottom: 0; }
+.bhead { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; margin-bottom: 8px; }
+.bdate { font-size: 19px; }
+.bchips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.bchip { display: inline-block; font-size: 13px; padding: 2px 9px; border-radius: 99px; background: var(--bg); color: var(--text); border: 1px solid var(--line); font-weight: 600; white-space: nowrap; }
+.bchip.b-ok { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
+.bchip.b-warn { background: var(--warn-bg); color: var(--warn-text); border-color: transparent; }
+.bchip.b-cxl { background: transparent; color: var(--out); border-color: var(--out); }
+.bslot { display: grid; grid-template-columns: 64px 1fr 44px; gap: 8px; align-items: center; font-size: 15px; padding: 3px 0; }
+.bbar { height: 12px; border-radius: 6px; background: var(--line); overflow: hidden; }
+.bbar i { display: block; height: 100%; background: var(--accent); }
+.bbar i.full { background: var(--out); }
+.bwho { grid-column: 2 / -1; font-size: 13px; color: var(--muted); }
+.bnote { font-size: 15px; margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--line); }
+.bnote b { color: var(--warn-text); }
+.board { display: flex; gap: 10px; overflow-x: auto; padding: 2px 2px 10px; align-items: flex-start; -webkit-overflow-scrolling: touch; }
+.lane { flex: 0 0 200px; background: var(--accent-soft); border-radius: 12px; padding: 8px; display: flex; flex-direction: column; gap: 6px; min-height: 140px; }
+.lane.pool { background: var(--warn-bg); }
+.lane.cxl { background: color-mix(in srgb, var(--out) 12%, var(--card)); flex-basis: 160px; }
+.lane .lh { display: flex; justify-content: space-between; font-size: 14px; font-weight: 700; margin-bottom: 2px; }
+.lane.hot { outline: 3px solid var(--accent); }
+.seat { border: 1px dashed var(--line); border-radius: 10px; min-height: 52px; display: flex; align-items: center; gap: 6px; padding: 4px 6px; background: var(--card); }
+.seat.hot { border: 2px solid var(--accent); background: var(--accent-soft); }
+.seat .sl { font-weight: 700; color: var(--muted); width: 18px; text-align: center; flex: 0 0 auto; }
+.kcard { flex: 1; min-width: 0; background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; font-size: 16px; font-weight: 600; line-height: 1.35;
+  touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; cursor: grab; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+.kcard .bchip { font-size: 11px; padding: 0 6px; }
+.kcard.sel { outline: 3px solid var(--accent); }
+.kcard.dragging { opacity: .35; }
+.kghost { position: fixed; left: 0; top: 0; pointer-events: none; z-index: 40; opacity: .92; box-shadow: 0 10px 24px rgba(0,0,0,.25); }
+.brow { display: grid; grid-template-columns: minmax(110px, 1.2fr) 120px minmax(130px, 1fr) auto minmax(120px, 1fr) auto; gap: 8px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line); }
+.brow:first-child { border-top: 0; }
+.brow.cxl { opacity: .55; }
+.brow select, .brow input { min-height: 44px; font-size: 16px; padding: 6px 8px; }
+.bname { font-weight: 700; font-size: 17px; }
+.btags { display: flex; gap: 4px; }
+.btags .sbtn { min-width: 0; min-height: 40px; padding: 4px 10px; font-size: 14px; }
+@media (max-width: 820px) {
+  .brow { grid-template-columns: 1fr 1fr; }
+  .brow .bname { grid-column: 1 / -1; }
+  .brow .btags, .brow input { grid-column: 1 / -1; }
+}

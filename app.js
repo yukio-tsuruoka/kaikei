@@ -3,7 +3,7 @@
    データはこの端末の中（localStorage）にだけ保存し、外へは送らない。 */
 
 const STORE_KEY = 'kaikei.v1';
-const APP_VERSION = '1.10.0';
+const APP_VERSION = '1.11.0';
 
 // ---------- 勘定科目 ----------
 const EXPENSES = [
@@ -236,9 +236,9 @@ function toast(msg) {
 // ---------- 描画 ----------
 function render() {
   const v = document.getElementById('view');
-  const tab = ['customer', 'venues', 'venue', 'session', 'sessclose'].includes(ui.view) ? 'customers' : ui.view === 'ledger' ? 'list' : ui.view;
+  const tab = ['customer', 'venues', 'venue', 'session', 'sessclose', 'booking', 'bookday'].includes(ui.view) ? 'customers' : ui.view === 'ledger' ? 'list' : ui.view;
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.go === tab));
-  v.innerHTML = ({ home: viewHome, input: viewInput, list: viewList, summary: viewSummary, settings: viewSettings, ledger: viewLedger, customers: viewCustomers, customer: viewCustomer, venues: viewVenues, venue: viewVenue, session: viewSession, sessclose: viewSessClose })[ui.view]();
+  v.innerHTML = ({ home: viewHome, input: viewInput, list: viewList, summary: viewSummary, settings: viewSettings, ledger: viewLedger, customers: viewCustomers, customer: viewCustomer, venues: viewVenues, venue: viewVenue, session: viewSession, sessclose: viewSessClose, booking: viewBooking, bookday: viewBookDay })[ui.view]();
   if (ui.view === 'sessclose') bindSessClose();
   if (ui.view === 'input') bindInput();
   if (ui.view === 'settings') bindSettings();
@@ -296,6 +296,7 @@ function viewHome() {
     <button class="bigbtn out" data-new="out">＋ 支出</button>
     <button class="bigbtn" data-new="move">⇄ お金の移動</button>
     <button class="bigbtn" data-go="session" style="grid-column:1/-1;color:var(--accent)">📋 会場で記録する（名簿・出欠・まとめて記録）</button>
+    <button class="bigbtn" data-go="booking" style="grid-column:1/-1;color:var(--accent)">🗓 予約を管理する（次回の参加予定・品川の予約枠）</button>
   </div>
   <h2>いまの残高</h2>
   <div class="stats">
@@ -789,7 +790,7 @@ function customerStats(venue) {
 // ---------- 会場 ----------
 function venueNames() { return [...new Set(state.entries.map(e => e.venue).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ja')); }
 function peopleTabs(on) {
-  return `<div class="seg">${[['session', '会場で記録'], ['customers', 'お客様ごと'], ['venues', '会場ごと']].map(([k, l]) =>
+  return `<div class="seg">${[['booking', '予約'], ['session', '会場で記録'], ['customers', 'お客様ごと'], ['venues', '会場ごと']].map(([k, l]) =>
     `<button data-go="${k}" class="${on === k ? 'on' : ''}">${l}</button>`).join('')}</div>`;
 }
 function venueStats(ents) { // 会場ごと（会場なしは「共通」）の収入・経費・メンバー
@@ -1140,7 +1141,7 @@ function viewSession() {
 
   const key = sessKey(s.venue, s.date);
   const sess = sessionData(key);
-  const names = [...new Set([...roster(s.venue), ...Object.keys(sess.rows)])].sort((a, b) => a.localeCompare(b, 'ja'));
+  const names = [...new Set([...roster(s.venue), ...Object.keys(sess.rows), ...bookedNames(key)])].sort((a, b) => a.localeCompare(b, 'ja'));
   ui.sessNames = names;
   let done = 0, cash = 0, bank = 0, later = 0, unsaved = 0;
   const st = {};
@@ -1173,7 +1174,7 @@ function viewSession() {
     }
     const prev = r.att !== 'out' && !rowItems(n, r).length && lastOrder(n, s.venue);
     return `<div class="scard st-${stt.k}">
-      <div class="shead"><div class="sname">${esc(n)}${pr && pr.receipt ? ' <span class="badge">領収書</span>' : ''}</div>
+      <div class="shead"><div class="sname">${esc(n)}${pr && pr.receipt ? ' <span class="badge">領収書</span>' : ''}${bookedLabel(key, n) ? ` <span class="badge in">${esc(bookedLabel(key, n))}</span>` : ''}</div>
         <span class="sstate">${stt.label}</span>${total ? `<b class="num">${yen(total)}</b>` : ''}</div>
       <div class="srow">${btn('att', 'in', '来た', r.att === 'in')}${btn('att', 'out', '休み', r.att === 'out')}${prev ? btn('prev', '', '前回と同じ', false) : ''}</div>
       ${body}</div>`;
@@ -1474,6 +1475,382 @@ function bindSettings() {
     state.customExpenses = state.customExpenses.filter(x => x !== n); save(); render();
   });
 }
+
+// ---------- 予約（会場・日ごとの参加予約。品川は時間帯 × 台の予約枠） ----------
+const B_STATUSES = ['予約', '仮予約', '未確認', 'キャンセル'];
+const B_TAGS = ['新規', 'スタッフ', '同意書'];
+const B_SEATS = 'ABCDEFGHIJ';
+const bStatus = p => B_STATUSES.includes(p.status) ? p.status : '予約';
+const bActive = p => bStatus(p) !== 'キャンセル';
+const bSlots = b => String((b && b.slots) || '').split(/[,、，\s]+/).map(x => x.trim()).filter(Boolean);
+const bSeats = b => B_SEATS.slice(0, Math.max(1, Math.min(10, parseAmount(b && b.cap) || 4))).split('');
+const bMark = i => '①②③④⑤⑥⑦⑧⑨⑩'[i] || String(i + 1);
+const bJpTime = t => String(t).replace(/(\d{1,2}):(\d{2})/g, (m, h, mi) => `${+h}時${mi}分`);
+const bFromJpTime = t => String(t).replace(/(\d{1,2})時(\d{1,2})分/g, (m, h, mi) => `${+h}:${mi.padStart(2, '0')}`).replace(/(\d{1,2})時/g, '$1:00').replace(/[~～−-]/g, '〜').replace(/\s/g, '');
+const WEEK = '日月火水木金土';
+function bDate(d) { if (!d) return ''; const x = new Date(d + 'T00:00:00'); return `${x.getMonth() + 1}/${x.getDate()}（${WEEK[x.getDay()]}）`; }
+function bDaysUntil(d) { return Math.round((new Date(d + 'T00:00:00') - new Date(today() + 'T00:00:00')) / 864e5); }
+function bAddDays(d, n) { const x = new Date(d + 'T00:00:00'); x.setDate(x.getDate() + n); return `${x.getFullYear()}-${pad(x.getMonth() + 1)}-${pad(x.getDate())}`; }
+function bookings() { return state.bookings || (state.bookings = {}); }
+function bKeyParts(k) { const i = k.lastIndexOf('|'); return { venue: k.slice(0, i), date: k.slice(i + 1) }; }
+function bGet(k) { return bookings()[k]; }
+function bPeople(b) { return b.people || (b.people = []); }
+function bFind(b, name) { return bPeople(b).find(p => p.name === name); }
+// 前回の同じ会場の予約（時間帯・台数・運営者人数を引き継ぐため）
+function bPrev(venue, beforeDate) {
+  return Object.entries(bookings()).map(([k, b]) => ({ k, b, ...bKeyParts(k) }))
+    .filter(x => x.venue === venue && (!beforeDate || x.date < beforeDate)).sort((a, b) => b.date.localeCompare(a.date))[0];
+}
+function bCreate(venue, date) {
+  const k = sessKey(venue, date);
+  if (bGet(k)) return { k, b: bGet(k), created: false, added: 0 };
+  const prev = bPrev(venue);
+  const b = { slots: prev ? prev.b.slots || '' : '', cap: prev ? prev.b.cap || '' : '', ops: prev ? prev.b.ops || '' : '', people: [], updated: Date.now() };
+  bookings()[k] = b;
+  // 会場の名簿の人（いつも来る方）を「未確認」で入れる
+  let added = 0;
+  for (const n of roster(venue)) { b.people.push({ name: n, status: '未確認', slot: '', seat: '', tags: [], memo: '' }); added++; }
+  return { k, b, created: true, added };
+}
+function bAdd(b, r) {
+  if (!r.name || bFind(b, r.name)) return false;
+  bPeople(b).push({ name: r.name, status: B_STATUSES.includes(r.status) ? r.status : '予約', slot: r.slot || '', seat: r.seat || '', tags: r.tags || [], memo: r.memo || '' });
+  return true;
+}
+function bCounts(b) {
+  const c = {}; B_STATUSES.forEach(k => c[k] = 0); B_TAGS.forEach(k => c[k] = 0);
+  bPeople(b).forEach(p => { c[bStatus(p)]++; if (bActive(p)) (p.tags || []).forEach(t => { if (t in c) c[t]++; }); });
+  return c;
+}
+function bChips(c) {
+  const cls = { 予約: 'b-ok', 仮予約: 'b-warn', 未確認: 'b-warn', キャンセル: 'b-cxl' };
+  return B_STATUSES.filter(k => c[k]).map(k => `<span class="bchip ${cls[k]}">${k} ${c[k]}人</span>`).join('')
+    + B_TAGS.filter(t => c[t]).map(t => `<span class="bchip">${t === '同意書' ? '同意書が必要' : t} ${c[t]}人</span>`).join('');
+}
+// 「（新規）小林幸代」「田中 健二（仮）」「草苅克典　お水-6000円」のような書き方を読み取る
+function bParse(raw) {
+  let rest = String(raw || '').trim(); const tags = [], memo = []; let status = '', m;
+  const take = t => {
+    t = t.trim(); if (!t) return;
+    if (/新規/.test(t)) tags.push('新規');
+    else if (/スタッフ/.test(t)) tags.push('スタッフ');
+    else if (/同意書/.test(t)) { tags.push('同意書'); memo.push(t); }
+    else if (/キャンセル/.test(t)) status = 'キャンセル';
+    else if (/仮/.test(t)) status = '仮予約';
+    else memo.push(t);
+  };
+  while ((m = rest.match(/^[（(]([^）)]*)[）)]\s*/))) { take(m[1]); rest = rest.slice(m[0].length); }
+  while ((m = rest.match(/\s*[（(]([^）)]*)[）)]$/))) { take(m[1]); rest = rest.slice(0, rest.length - m[0].length); }
+  const sp = rest.indexOf('　');
+  if (sp > 0) { memo.push(rest.slice(sp + 1).trim()); rest = rest.slice(0, sp); }
+  return { name: rest.trim(), tags, memo: memo.filter(Boolean).join(' '), status };
+}
+// LINE に貼る予約表（品川の形）
+function bLineText(k) {
+  const b = bGet(k), { date } = bKeyParts(k), ps = bPeople(b).filter(bActive), slots = bSlots(b), seats = bSeats(b);
+  const out = [`更新日時：${today().replace(/-/g, '/')}`, '【日程】', date.replace(/-/g, '/'), '【リファイナリー台数】', `${seats.length}台${parseAmount(b.ops) ? `(運営者人数${parseAmount(b.ops)}名)` : ''}`, '【予約状況】'];
+  slots.forEach((t, i) => {
+    out.push(`${bMark(i)}${bJpTime(t)}`);
+    seats.forEach(L => { const q = ps.find(x => x.slot === t && x.seat === L); out.push(`${L}.${q ? q.name + (bStatus(q) === '仮予約' ? '（仮）' : '') : ''}`); });
+    if (i < slots.length - 1) out.push('');
+  });
+  return out.join('\n');
+}
+function bParseLine(text) {
+  const r = { date: '', cap: 0, ops: 0, slots: [], entries: [] }; let mode = '', cur = null;
+  String(text).split(/\r?\n/).map(l => l.trim()).forEach(l => {
+    if (!l) return;
+    if (/^【日程】/.test(l)) { mode = 'date'; return; }
+    if (/^【リファイナリー台数】/.test(l)) { mode = 'cap'; return; }
+    if (/^【予約状況】/.test(l)) { mode = 'slots'; return; }
+    if (/^【/.test(l)) { mode = ''; return; }
+    if (mode === 'date' && !r.date) { const m = l.match(/(\d{4})\D+(\d{1,2})\D+(\d{1,2})/); if (m) r.date = `${m[1]}-${pad(+m[2])}-${pad(+m[3])}`; return; }
+    if (mode === 'cap') { const m = l.match(/(\d+)\s*台/); if (m) r.cap = +m[1]; const o = l.match(/運営者[^\d]*(\d+)/); if (o) r.ops = +o[1]; return; }
+    if (mode === 'slots') {
+      const sm = l.match(/^([①-⑩])\s*(.+)$/);
+      if (sm) { cur = bFromJpTime(sm[2]); r.slots.push(cur); return; }
+      const em = l.match(/^([A-JＡ-Ｊ])\s*[.．。:：)）]?\s*(.*)$/);
+      if (em && cur) { const c = em[1].charCodeAt(0); const seat = String.fromCharCode(c > 255 ? c - 0xFEE0 : c); if (em[2].trim()) r.entries.push({ slot: cur, seat, raw: em[2].trim() }); }
+    }
+  });
+  return r;
+}
+async function bCopy(text) {
+  try { await navigator.clipboard.writeText(text); toast('予約表をコピーしました。LINE に貼り付けてください'); return; } catch (e) { /* 下でもう一度 */ }
+  const ta = document.createElement('textarea'); ta.value = text; ta.setAttribute('readonly', ''); ta.style.position = 'fixed'; ta.style.top = '0'; ta.style.opacity = '0';
+  document.body.appendChild(ta); ta.select(); ta.setSelectionRange(0, text.length);
+  let ok = false; try { ok = document.execCommand('copy'); } catch (e) { /* 失敗 */ }
+  ta.remove();
+  if (ok) toast('予約表をコピーしました。LINE に貼り付けてください');
+  else alert('コピーできませんでした。「予約枠と LINE の予約表」の欄の文章を長押しして選び、コピーしてください。');
+}
+// 当日の記録（会場で記録）の名簿に入れる人：予約していてキャンセルでない人
+function bookedNames(k) { const b = bGet(k); return b ? bPeople(b).filter(bActive).map(p => p.name) : []; }
+function bookedLabel(k, name) {
+  const b = bGet(k); if (!b) return '';
+  const p = bFind(b, name); if (!p) return '';
+  const slots = bSlots(b), i = slots.indexOf(p.slot);
+  return p.slot ? `${i >= 0 ? bMark(i) : ''}${p.seat ? '-' + p.seat : ''} ${p.slot.split('〜')[0]}` : (bStatus(p) === '予約' ? '予約' : bStatus(p));
+}
+
+function viewBooking() {
+  const t = today();
+  const all = Object.entries(bookings()).map(([k, b]) => ({ k, b, ...bKeyParts(k) }));
+  const up = all.filter(x => x.date >= t).sort((a, b) => a.date.localeCompare(b.date) || a.venue.localeCompare(b.venue, 'ja'));
+  const past = all.filter(x => x.date < t).sort((a, b) => b.date.localeCompare(a.date)).slice(0, 10);
+  const venues = allVenues();
+  ui.bnew = ui.bnew || { venue: venues[0] || '', date: bAddDays(t, 7) };
+  const card = ({ k, b, venue, date }) => {
+    const ps = bPeople(b).filter(bActive), slots = bSlots(b), seats = bSeats(b), cap = parseAmount(b.cap), du = bDaysUntil(date);
+    const bar = (n, lab, who) => `<div class="bslot"><span>${lab}</span><div class="bbar"><i class="${cap && n >= cap ? 'full' : ''}" style="width:${cap ? Math.min(100, n / cap * 100) : 0}%"></i></div><b class="num">${n}${cap ? '/' + cap : ''}</b>${who ? `<div class="bwho">${who}</div>` : ''}</div>`;
+    let slotHtml = '';
+    if (slots.length) {
+      slotHtml = slots.map((s, i) => { const a = ps.filter(p => p.slot === s).sort((x, y) => (x.seat || 'Z').localeCompare(y.seat || 'Z')); return bar(a.length, bMark(i) + esc(s.split('〜')[0]), a.map(p => (p.seat ? p.seat + ' ' : '') + esc(p.name) + (bStatus(p) !== '予約' ? `（${bStatus(p)}）` : '')).join('、')); }).join('');
+      const un = ps.filter(p => !slots.includes(p.slot)); if (un.length) slotHtml += `<div class="bwho">時間帯が未定：${un.map(p => esc(p.name)).join('、')}</div>`;
+      if (cap) slotHtml += `<div class="small muted">空き 合計 ${slots.reduce((a, s) => a + Math.max(0, seats.length - ps.filter(p => p.slot === s && p.seat).length), 0)} 枠</div>`;
+    }
+    const unc = bPeople(b).filter(p => bStatus(p) === '未確認');
+    return `<div class="card bcard">
+      <div class="bhead"><b class="bdate">${bDate(date)}</b><b>${esc(venue)}</b><span class="muted small">${du === 0 ? '今日' : du === 1 ? '明日' : du > 0 ? `あと${du}日` : ''}</span></div>
+      <div class="bchips">${bPeople(b).length ? bChips(bCounts(b)) : '<span class="muted small">まだ名簿がありません</span>'}</div>
+      ${slotHtml}
+      ${unc.length ? `<div class="bnote"><b>出欠の確認がまだ（${unc.length}人）</b>：${unc.map(p => esc(p.name)).join('、')}</div>` : ''}
+      <div class="btns" style="margin-top:10px"><button class="btn primary" data-bopen="${esc(k)}">開く</button>${slots.length ? `<button class="btn" data-bcopy="${esc(k)}">予約表をコピー</button>` : ''}</div>
+    </div>`;
+  };
+  return `${peopleTabs('booking')}
+  <div class="card">
+    <h2 style="margin-top:0">次回の会場の予約を作る</h2>
+    <div class="row2">
+      <div class="field"><label>会場</label><select id="bn-venue">${options([...venues.map(v => [v, v]), ['__new', '＋ 新しい会場を追加']], ui.bnew.venue)}</select></div>
+      <div class="field"><label>日付</label><input type="date" id="bn-date" value="${esc(ui.bnew.date)}"></div>
+    </div>
+    <button class="btn primary" data-bnew="1">予約を作る</button>
+    <p class="hint">その会場の名簿の方が「未確認」で入ります。時間帯と台数は、前回の同じ会場から引き継ぎます。</p>
+  </div>
+  <h2>これからの予約</h2>
+  ${up.length ? `<div class="bgrid">${up.map(card).join('')}</div>` : '<div class="card empty">これからの予約はまだありません。上で会場と日付を選んで「予約を作る」を押してください。</div>'}
+  <div class="card">
+    <h2 style="margin-top:0">LINE の予約表から取り込む（品川）</h2>
+    <div class="field"><label>会場</label><input id="bi-venue" list="bi-venues" value="${esc(ui.bimpVenue || '品川')}" autocomplete="off"><datalist id="bi-venues">${venues.map(v => `<option value="${esc(v)}">`).join('')}</datalist></div>
+    <div class="field"><label>予約表（【日程】【リファイナリー台数】【予約状況】の文章をそのまま貼り付け）</label><textarea id="bi-text" rows="8" placeholder="更新日時：2026/11/02&#10;【日程】&#10;2026/11/05&#10;【リファイナリー台数】&#10;4台(運営者人数2名)&#10;【予約状況】&#10;①9時30分〜11時30分&#10;A.佐藤 美紀&#10;B.&#10;…"></textarea></div>
+    <button class="btn primary" data-bimport="1">取り込む</button>
+    ${ui.bimpMsg ? `<div class="banner" style="margin-top:12px;background:var(--accent-soft);color:var(--text)">${ui.bimpMsg}</div>` : ''}
+  </div>
+  ${past.length ? `<details class="card"><summary>終わった予約（最近の10件）</summary><div class="list" style="margin-top:8px">${past.map(({ k, b, venue, date }) => `<button class="item" data-bopen="${esc(k)}" style="grid-template-columns:90px 1fr auto"><div class="d">${bDate(date)}</div><div class="main">${esc(venue)}</div><div class="small muted">${bPeople(b).filter(bActive).length}人</div></button>`).join('')}</div></details>` : ''}`;
+}
+
+function viewBookDay() {
+  const k = ui.bk, b = bGet(k);
+  if (!b) { ui.view = 'booking'; return viewBooking(); }
+  const { venue, date } = bKeyParts(k);
+  const all = bPeople(b), slots = bSlots(b), seats = bSeats(b), c = bCounts(b);
+  const placed = p => bActive(p) && slots.includes(p.slot) && seats.includes(p.seat);
+  const kc = p => { const st = bStatus(p); return `<div class="kcard${ui.bsel === p.name ? ' sel' : ''}" data-kname="${esc(p.name)}">${esc(p.name)}${st !== '予約' ? ` <span class="bchip ${st === 'キャンセル' ? 'b-cxl' : 'b-warn'}">${st}</span>` : ''}${(p.tags || []).map(t => ` <span class="bchip">${t}</span>`).join('')}</div>`; };
+  let board = '';
+  if (slots.length) {
+    const pool = all.filter(p => bActive(p) && !placed(p)), cxl = all.filter(p => !bActive(p));
+    board = `<div class="board" id="board">
+      <div class="lane pool" data-drop="pool"><div class="lh"><span>未定</span><span>${pool.length}人</span></div>${pool.map(kc).join('') || '<div class="small muted">全員の枠が決まっています</div>'}</div>
+      ${slots.map((t, i) => { const n = all.filter(p => placed(p) && p.slot === t).length; return `<div class="lane" data-drop="slot" data-slot="${esc(t)}"><div class="lh"><span>${bMark(i)}${esc(t)}</span><span class="${n >= seats.length ? 'out' : ''}">${n}/${seats.length}</span></div>${seats.map(L => { const q = all.find(x => placed(x) && x.slot === t && x.seat === L); return `<div class="seat" data-drop="seat" data-slot="${esc(t)}" data-seat="${L}"><span class="sl">${L}</span>${q ? kc(q) : '<span class="small muted">空き</span>'}</div>`; }).join('')}</div>`; }).join('')}
+      <div class="lane cxl" data-drop="cancel"><div class="lh"><span>キャンセル</span><span>${cxl.length}人</span></div>${cxl.map(kc).join('')}</div>
+    </div>
+    <p class="hint">名前のカードを台へドラッグするか、カードを押して選んでから置きたい台を押します。人のいる台に置くと入れかわります。</p>`;
+  }
+  const slotOpts = p => `<option value="">未定</option>${slots.map((t, i) => `<optgroup label="${bMark(i)}${esc(t)}"><option value="${esc(t)}|"${p.slot === t && !p.seat ? ' selected' : ''}>${bMark(i)} 台は未定</option>${seats.map(L => { const who = all.find(x => x !== p && bActive(x) && x.slot === t && x.seat === L); return `<option value="${esc(t + '|' + L)}"${p.slot === t && p.seat === L ? ' selected' : ''}${who ? ' disabled' : ''}>${bMark(i)}-${L}${who ? `（${esc(who.name)}）` : ''}</option>`; }).join('')}</optgroup>`).join('')}`;
+  const rows = all.map((p, i) => `<div class="brow${bActive(p) ? '' : ' cxl'}">
+      <div class="bname">${esc(p.name)}</div>
+      <select data-bf="status" data-bi="${i}">${B_STATUSES.map(s => `<option${s === bStatus(p) ? ' selected' : ''}>${s}</option>`).join('')}</select>
+      ${slots.length ? `<select data-bf="slotseat" data-bi="${i}">${slotOpts(p)}</select>` : ''}
+      <div class="btags">${B_TAGS.map(t => `<button class="sbtn ${(p.tags || []).includes(t) ? 'on' : ''}" data-btag="${t}" data-bi="${i}">${t}</button>`).join('')}</div>
+      <input data-bf="memo" data-bi="${i}" value="${esc(p.memo || '')}" placeholder="メモ">
+      <button class="btn danger" data-bdel="${i}">外す</button>
+    </div>`).join('');
+  return `${peopleTabs('booking')}
+  <div class="btns" style="margin-bottom:10px"><button class="btn" data-go="booking">← 予約の一覧</button><button class="btn" data-bsess="1">この日の「会場で記録」へ</button></div>
+  <h2 style="margin-top:4px">${bDate(date)}　${esc(venue)}</h2>
+  <div class="bchips">${all.length ? bChips(c) : ''}</div>
+  <details class="card" ${slots.length || ui.bslotOpen ? 'open' : ''} id="bslot-panel">
+    <summary>${slots.length ? `予約枠：${slots.length}つの時間帯 × ${seats.length}台（LINE の予約表もここ）` : '予約枠（時間帯 × 台）を使う（品川など）'}</summary>
+    <div class="field" style="margin-top:10px"><label>時間帯（カンマ区切り）</label><input id="bk-slots" value="${esc(slots.join(', '))}" placeholder="9:30〜11:30, 11:30〜13:30, 13:30〜15:30, 15:30〜17:30"></div>
+    <div class="row2">
+      <div class="field"><label>リファイナリー台数</label><input id="bk-cap" inputmode="numeric" value="${esc(b.cap || '')}" placeholder="4"></div>
+      <div class="field"><label>運営者人数</label><input id="bk-ops" inputmode="numeric" value="${esc(b.ops || '')}" placeholder="2"></div>
+    </div>
+    ${slots.length ? `<div class="field"><label>LINE に貼る予約表</label><textarea rows="10" readonly>${esc(bLineText(k))}</textarea></div>
+    <button class="btn primary" data-bcopy="${esc(k)}">予約表をコピー</button>` : '<p class="hint">時間帯を入れると、予約ボードと LINE の予約表が使えるようになります。</p>'}
+  </details>
+  ${board}
+  <h2>名簿（${all.filter(bActive).length}人${c['キャンセル'] ? `・キャンセル ${c['キャンセル']}人` : ''}）</h2>
+  <div class="card">${rows || '<div class="empty">まだ名簿がありません。下から追加してください。</div>'}</div>
+  <div class="card">
+    <div class="row2"><div class="field"><input id="bk-add" list="bk-allcust" placeholder="お名前（（新規）○○ のようにも書けます）" autocomplete="off">
+      <datalist id="bk-allcust">${[...new Set([...state.entries.map(e => e.partner).filter(Boolean), ...Object.keys(state.customers || {})])].map(n => `<option value="${esc(n)}">`).join('')}</datalist></div>
+      <div><button class="btn primary" data-badd="1">名簿に追加</button></div></div>
+    <details><summary>まとめて貼り付けて追加する</summary>
+      <p class="hint">1行に1人。「（新規）小林幸代」「田中 健二（仮）」「草苅克典　お水-6000円」のような書き方も読み取ります。</p>
+      <textarea id="bk-bulk" rows="5"></textarea>
+      <button class="btn" data-bbulk="1" style="margin-top:8px">まとめて追加</button>
+    </details>
+  </div>
+  <button class="btn danger" data-bremove="1">この予約を削除</button>`;
+}
+
+function bRerender() { const y = window.scrollY; render(); window.scrollTo(0, y); }
+function bMove(name, tg) {
+  const k = ui.bk, b = bGet(k); const p = b && bFind(b, name); if (!p || !tg) return;
+  const slots = bSlots(b), seats = bSeats(b);
+  const wasPlaced = bActive(p) && slots.includes(p.slot) && seats.includes(p.seat);
+  const others = bPeople(b).filter(x => x !== p && bActive(x));
+  let msg = '';
+  if (tg.kind === 'pool') { p.slot = ''; p.seat = ''; if (!bActive(p)) p.status = '予約'; msg = `${name} 様を「未定」にしました`; }
+  else if (tg.kind === 'cancel') { p.status = 'キャンセル'; p.slot = ''; p.seat = ''; msg = `${name} 様をキャンセルにしました`; }
+  else {
+    let seat = tg.seat;
+    if (tg.kind === 'slot') {
+      if (wasPlaced && p.slot === tg.slot) { ui.bsel = null; bRerender(); return; }
+      seat = seats.find(L => !others.some(x => x.slot === tg.slot && x.seat === L));
+      if (!seat) { toast('この時間帯は満席です'); return; }
+    }
+    if (wasPlaced && p.slot === tg.slot && p.seat === seat) { ui.bsel = null; bRerender(); return; }
+    const occ = others.find(x => x.slot === tg.slot && x.seat === seat);
+    if (occ) { if (wasPlaced) { occ.slot = p.slot; occ.seat = p.seat; } else { occ.slot = ''; occ.seat = ''; } }
+    if (!bActive(p)) p.status = '予約';
+    p.slot = tg.slot; p.seat = seat;
+    msg = `${name} 様を ${bMark(slots.indexOf(tg.slot))}-${seat} に置きました` + (occ ? `（${occ.name} 様は${wasPlaced ? '入れかわり' : '「未定」へ'}）` : '');
+  }
+  b.updated = Date.now(); ui.bsel = null; save(); bRerender(); toast(msg);
+}
+function bTarget(el) { const d = el && el.closest && el.closest('[data-drop]'); return d ? { kind: d.dataset.drop, slot: d.dataset.slot || '', seat: d.dataset.seat || '', el: d } : null; }
+
+// 予約ボードのドラッグ（指でもマウスでも動くように pointer イベントで扱う）
+let bDrag = null;
+document.addEventListener('pointerdown', e => {
+  const c = e.target.closest && e.target.closest('#board .kcard'); if (!c || e.button > 0) return;
+  bDrag = { name: c.dataset.kname, el: c, x: e.clientX, y: e.clientY, started: false, ghost: null, hot: null, id: e.pointerId };
+});
+document.addEventListener('pointermove', e => {
+  if (!bDrag || e.pointerId !== bDrag.id) return;
+  if (!bDrag.started) {
+    if (Math.hypot(e.clientX - bDrag.x, e.clientY - bDrag.y) < 8) return;
+    bDrag.started = true;
+    const g = bDrag.el.cloneNode(true); g.classList.add('kghost'); g.classList.remove('sel'); g.style.width = bDrag.el.offsetWidth + 'px';
+    document.body.appendChild(g); bDrag.ghost = g; bDrag.el.classList.add('dragging');
+  }
+  e.preventDefault();
+  bDrag.ghost.style.transform = `translate(${e.clientX - 24}px,${e.clientY - 20}px) rotate(2deg)`;
+  const tg = bTarget(document.elementFromPoint(e.clientX, e.clientY)), hot = tg ? tg.el : null;
+  if (hot !== bDrag.hot) { if (bDrag.hot) bDrag.hot.classList.remove('hot'); if (hot) hot.classList.add('hot'); bDrag.hot = hot; }
+}, { passive: false });
+document.addEventListener('pointerup', e => {
+  if (!bDrag || e.pointerId !== bDrag.id) return;
+  const d = bDrag; bDrag = null;
+  if (d.hot) d.hot.classList.remove('hot');
+  if (d.ghost) d.ghost.remove();
+  d.el.classList.remove('dragging');
+  if (d.started) { bMove(d.name, bTarget(document.elementFromPoint(e.clientX, e.clientY))); return; }
+  if (ui.bsel && ui.bsel !== d.name) { bMove(ui.bsel, bTarget(d.el.parentElement)); return; }
+  ui.bsel = ui.bsel === d.name ? null : d.name;
+  document.querySelectorAll('#board .kcard').forEach(x => x.classList.toggle('sel', x.dataset.kname === ui.bsel));
+  if (ui.bsel) toast(`${ui.bsel} 様を選びました。置きたい台を押してください`);
+});
+document.addEventListener('pointercancel', () => { if (!bDrag) return; if (bDrag.hot) bDrag.hot.classList.remove('hot'); if (bDrag.ghost) bDrag.ghost.remove(); bDrag.el.classList.remove('dragging'); bDrag = null; });
+
+document.addEventListener('click', e => {
+  // 予約ボード：カードを選んだあとに、空いている台や列を押したとき
+  if (ui.view === 'bookday' && ui.bsel && !e.target.closest('.kcard') && e.target.closest('#board')) { bMove(ui.bsel, bTarget(e.target)); return; }
+  const t = e.target.closest('button'); if (!t) return;
+  const d = t.dataset;
+  if (d.bopen) { ui.bk = d.bopen; ui.bsel = null; go('bookday'); }
+  else if (d.bcopy) { bCopy(bLineText(d.bcopy)); }
+  else if (d.bnew) {
+    const venue = ui.bnew.venue, date = ui.bnew.date;
+    if (!venue) { alert('会場を選んでください。'); return; }
+    if (!date) { alert('日付を選んでください。'); return; }
+    const r = bCreate(venue, date);
+    if (!save()) return;
+    ui.bk = r.k; ui.bsel = null; go('bookday');
+    toast(r.created ? `予約を作りました${r.added ? `（名簿の ${r.added} 人を「未確認」で入れました）` : ''}` : 'この日の予約はもうあります');
+  } else if (d.bimport) {
+    const venue = document.getElementById('bi-venue').value.trim(), r = bParseLine(document.getElementById('bi-text').value);
+    if (!venue) { alert('会場の名前を入れてください。'); return; }
+    if (!r.date) { alert('【日程】の日付が読み取れません。「2026/11/05」の形か確かめてください。'); return; }
+    if (!r.slots.length) { alert('【予約状況】の時間帯（①9時30分〜…）が読み取れません。'); return; }
+    ui.bimpVenue = venue;
+    const { k, b, created, added: reg } = bCreate(venue, r.date);
+    b.slots = r.slots.join(', '); if (r.cap) b.cap = r.cap; if (r.ops) b.ops = r.ops;
+    let added = 0, moved = 0; const names = new Set();
+    for (const en of r.entries) {
+      const pe = bParse(en.raw); if (!pe.name) continue; names.add(pe.name);
+      bPeople(b).forEach(o => { if (o.name !== pe.name && o.slot === en.slot && o.seat === en.seat) o.seat = ''; });
+      const q = bFind(b, pe.name);
+      if (q) {
+        q.slot = en.slot; q.seat = en.seat;
+        q.status = pe.status || (bStatus(q) === '仮予約' ? '仮予約' : '予約');
+        pe.tags.forEach(tg => { if (!(q.tags || []).includes(tg)) q.tags = [...(q.tags || []), tg]; });
+        if (pe.memo && !(q.memo || '').includes(pe.memo)) q.memo = [q.memo, pe.memo].filter(Boolean).join(' ');
+        moved++;
+      } else { bAdd(b, { name: pe.name, memo: pe.memo, tags: pe.tags, status: pe.status || '予約', slot: en.slot, seat: en.seat }); added++; }
+    }
+    b.updated = Date.now();
+    const notIn = bPeople(b).filter(p => bStatus(p) === '予約' && !names.has(p.name));
+    if (!save()) return;
+    ui.bimpMsg = `<b>${bDate(r.date)}「${esc(venue)}」</b>を${created ? '作りました' : '更新しました'}。予約表から ${names.size}人（新しく追加 ${added}人・枠を更新 ${moved}人）。`
+      + (created && reg ? `<br>名簿の ${reg}人を「未確認」で入れました（予約表に名前があった方は「予約」です）。` : '')
+      + (notIn.length ? `<br>「予約」なのに予約表にいない方：${notIn.map(p => esc(p.name)).join('、')}（そのままにしています。キャンセルなら直してください）` : '');
+    render(); toast('予約表を取り込みました');
+  } else if (d.btag) {
+    const b = bGet(ui.bk), p = bPeople(b)[+d.bi]; if (!p) return;
+    const s = new Set(p.tags || []); s.has(d.btag) ? s.delete(d.btag) : s.add(d.btag); p.tags = [...s];
+    b.updated = Date.now(); save(); bRerender();
+  } else if (d.bdel !== undefined) {
+    const b = bGet(ui.bk), p = bPeople(b)[+d.bdel]; if (!p) return;
+    if (!confirm(`${p.name} 様をこの日の予約から外しますか？（キャンセルとして残したいときは「外す」ではなく状態を「キャンセル」にしてください）`)) return;
+    b.people.splice(+d.bdel, 1); b.updated = Date.now(); save(); bRerender();
+  } else if (d.badd) {
+    const pe = bParse(document.getElementById('bk-add').value); if (!pe.name) return;
+    const b = bGet(ui.bk);
+    if (!bAdd(b, { name: pe.name, memo: pe.memo, tags: pe.tags, status: pe.status || '予約' })) { toast(`${pe.name} 様はもう名簿にいます`); return; }
+    b.updated = Date.now(); save(); bRerender(); toast(`${pe.name} 様を追加しました`);
+  } else if (d.bbulk) {
+    const b = bGet(ui.bk); let n = 0;
+    for (const line of document.getElementById('bk-bulk').value.split(/\r?\n/)) {
+      const l = line.trim(); if (!l || /^[▼■#]/.test(l)) continue;
+      const pe = bParse(l); if (bAdd(b, { name: pe.name, memo: pe.memo, tags: pe.tags, status: pe.status || '予約' })) n++;
+    }
+    b.updated = Date.now(); save(); bRerender(); toast(`${n} 人を追加しました`);
+  } else if (d.bremove) {
+    const { venue, date } = bKeyParts(ui.bk);
+    if (!confirm(`${bDate(date)}「${venue}」の予約を削除しますか？（帳簿の記録は消えません）`)) return;
+    delete bookings()[ui.bk]; save(); go('booking');
+  } else if (d.bsess) {
+    const { venue, date } = bKeyParts(ui.bk);
+    state.rosters = state.rosters || {}; if (!state.rosters[venue]) { state.rosters[venue] = []; save(); }
+    ui.sess = Object.assign(ui.sess || { filter: 'todo', q: '' }, { venue, date }); go('session');
+  }
+});
+document.addEventListener('change', e => {
+  const el = e.target;
+  if (el.id === 'bn-venue') {
+    let v = el.value;
+    if (v === '__new') { v = (prompt('新しい会場の名前を入れてください。') || '').trim(); if (v) { state.rosters = state.rosters || {}; state.rosters[v] = state.rosters[v] || []; save(); } else v = ui.bnew.venue; }
+    ui.bnew.venue = v; render(); return;
+  }
+  if (el.id === 'bn-date') { ui.bnew.date = el.value; return; }
+  if (el.id === 'bk-slots' || el.id === 'bk-cap' || el.id === 'bk-ops') {
+    const b = bGet(ui.bk); if (!b) return;
+    if (el.id === 'bk-slots') b.slots = bSlots({ slots: bFromJpTime(el.value.replace(/\s*[,、，]\s*/g, ',')) }).join(', ');
+    else b[el.id === 'bk-cap' ? 'cap' : 'ops'] = parseAmount(el.value) || '';
+    ui.bslotOpen = true; b.updated = Date.now(); save(); bRerender(); return;
+  }
+  if (el.dataset && el.dataset.bf) {
+    const b = bGet(ui.bk), p = b && bPeople(b)[+el.dataset.bi]; if (!p) return;
+    if (el.dataset.bf === 'slotseat') { const [a, s] = el.value.split('|'); p.slot = a || ''; p.seat = s || ''; }
+    else p[el.dataset.bf] = el.value.trim();
+    b.updated = Date.now(); save();
+    if (el.dataset.bf !== 'memo') bRerender();
+  }
+});
 
 // ---------- 共通のクリック処理 ----------
 document.addEventListener('click', e => {
